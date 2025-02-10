@@ -4,7 +4,7 @@
        alt="Python Logo"
        width="100"
        style="margin-right: 20px;" />
-  <img src="https://upload.wikimedia.org/wikipedia/commons/5/5c/LGPLv3_Icon.svg"
+  <img src="https://ja.wikipedia.org/wiki/%E3%83%95%E3%82%A1%E3%82%A4%E3%83%AB:LGPLv3_Logo.svg"
        alt="LGPL License Icon"
        width="100" />
 </div>
