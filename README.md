@@ -12,7 +12,7 @@ While based on Python, parallel processing using a GPU is possible by using CuPy
 Sample waveform file in np.array format.
 ![example rho model](examples/ex model/Ex_rhomodel.png)
 
-![calculated closs-section model of example](results\RTMimages\y_120.png)
+![calculated closs-section model of example](examples/results/RTMimages/y_120.png)
 
 
 1. This program 弾性波動伝播方程式を用いて弾性波探査におけるリバースタイム・マイグレーション
