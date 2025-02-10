@@ -1,3 +1,5 @@
+name: RTM
+
 channels:
   - defaults
   - conda-forge
