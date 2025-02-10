@@ -24,4 +24,8 @@ example rho model　　　　　　　　　　calculated closs-section of examp
  Load the npz file of the results, apply stacking and surface noise removal as necessary, and draw the reflection cross-section.  
  imaging.py uses matplotlib and other tools to output images
 
+# Contributions
+We welcome issues and pull requests at any time. Please feel free to contact us with bug reports, feature requests, etc.
 
+# Future Prospects
+We are working on setting up the system so that it can be run on different file formats, such as sg2 files.
