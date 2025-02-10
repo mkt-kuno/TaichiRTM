@@ -11,6 +11,7 @@ While based on Python, parallel processing using a GPU is possible by using CuPy
 # Examples 
 Sample waveform file in np.array format.
 ![example rho model](examples/ex%20model/Ex_rhomodel.png)
+#<img src="https://github.com/images/sample.png" width="300" alt="Sample Image" />
 
 ![calculated closs-section model of example](examples/results/RTMimages/y_120.png)
 
