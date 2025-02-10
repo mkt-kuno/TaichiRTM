@@ -1,3 +1,6 @@
+![Python logo](https://www.python.org/static/community_logos/python-logo-generic.svg)
+![LGPL icon](https://upload.wikimedia.org/wikipedia/commons/5/5c/LGPLv3_Icon.svg)
+
 # Reverse-Time-Migration
 We have created a program for reverse time migration in seismic exploration using a two-dimensional elastic wave propagation model.　
 
