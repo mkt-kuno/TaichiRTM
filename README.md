@@ -2,11 +2,8 @@
 <div align="left">
   <img src="https://www.python.org/static/community_logos/python-logo-generic.svg"
        alt="Python Logo"
-       width="100"
+       width="200"
        style="margin-right: 20px;" />
-  <img src="https://ja.wikipedia.org/wiki/%E3%83%95%E3%82%A1%E3%82%A4%E3%83%AB:LGPLv3_Logo.svg"
-       alt="LGPL License Icon"
-       width="100" />
 </div>
 
 We have created a program for reverse time migration in seismic exploration using a two-dimensional elastic wave propagation model.　
