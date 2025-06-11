@@ -7,7 +7,7 @@ dependencies:
   - python=3.12.2
   - numpy=1.26.4
   - matplotlib=3.9.2
-  - cudatoolkit=13.3
+  - cudatoolkit=11.8
   - pip
   - pip:
     - cupy==13.3.0
