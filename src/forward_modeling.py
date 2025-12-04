@@ -109,9 +109,10 @@ class ForwardModeling:
         # Velocity: u, v, w = 3 fields
         # Averaged material: mxz, myx, myz = 3 fields
         # Averaged density: rho_u, rho_w = 2 fields
+        # Pre-computed inverse density: inv_rho_u, inv_rho_w, inv_rho = 3 fields
         # Absorbing: absorb_coeff = 1 field
-        # Total = 14 fields (mu, lam, rho_field are reused from input)
-        num_grid_fields = 14
+        # Total = 17 fields (mu, lam, rho_field are reused from input)
+        num_grid_fields = 17
         grid_memory = num_grid_fields * nx * nz * dtype_size
 
         # Seismogram fields: seismogram_u, seismogram_v, seismogram_w
@@ -173,6 +174,12 @@ class ForwardModeling:
         self.rho_u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.rho_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
 
+        # Pre-computed inverse density fields for division optimization
+        # Division is 10-20x slower than multiplication, so we pre-compute 1/rho
+        self.inv_rho_u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.inv_rho_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.inv_rho = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+
         # Absorbing boundary coefficients
         self.absorb_coeff = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
 
@@ -190,31 +197,40 @@ class ForwardModeling:
 
         self._compute_shear_avg()
         self._compute_rho_avg()
+        self._compute_inv_rho()
 
     @ti.kernel
     def _init_absorbing_kernel(self, FW: ti.i32, a: ti.f32):
-        """Initialize absorbing boundary coefficients using Taichi kernel."""
+        """Initialize absorbing boundary coefficients using Taichi kernel.
+
+        Optimized with pre-computed a_sq to reduce redundant computation.
+        """
+        a_sq = a * a  # Pre-compute a^2 to avoid repeated multiplication
+
         for i, j in self.absorb_coeff:
             self.absorb_coeff[i, j] = 1.0
 
         # Left boundary
         for i, j in ti.ndrange(FW, self.nz):
             if j < self.nz - i - 1:
-                coeff = ti.exp(-(a ** 2 * (FW - i) ** 2))
+                diff = FW - i
+                coeff = ti.exp(-a_sq * diff * diff)
                 self.absorb_coeff[i, j] = coeff
 
         # Right boundary
         for i, j in ti.ndrange(FW, self.nz):
             ii = self.nx - i - 1
             if j < self.nz - i - 1:
-                coeff = ti.exp(-(a ** 2 * (FW - i) ** 2))
+                diff = FW - i
+                coeff = ti.exp(-a_sq * diff * diff)
                 self.absorb_coeff[ii, j] = coeff
 
         # Bottom boundary
         for i, j in ti.ndrange(self.nx, FW):
             jj = self.nz - j - 1
             if i >= j and i < self.nx - j:
-                coeff = ti.exp(-(a ** 2 * (FW - j) ** 2))
+                diff = FW - j
+                coeff = ti.exp(-a_sq * diff * diff)
                 self.absorb_coeff[i, jj] = coeff
 
     def _init_absorbing(self):
@@ -225,21 +241,37 @@ class ForwardModeling:
 
     @ti.kernel
     def _compute_shear_avg(self):
-        """Compute averaged shear modulus - parallelized."""
+        """Compute averaged shear modulus - parallelized.
+
+        Optimized: Uses multiplication-based harmonic mean formula to reduce divisions.
+        Original: H = n / (1/a + 1/b + ...)
+        Optimized: H = n * (product of all) / (sum of products excluding each)
+        """
+        ti.loop_config(block_dim=256)  # GPU block size optimization
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
             mu_ij = self.mu[i, j]
             mu_ip1_j = self.mu[i + 1, j]
             mu_i_jp1 = self.mu[i, j + 1]
             mu_ip1_jp1 = self.mu[i + 1, j + 1]
 
-            # Harmonic averaging for shear modulus
-            self.myx[i, j] = 2.0 / (1.0 / mu_ij + 1.0 / mu_ip1_j)
-            self.myz[i, j] = 2.0 / (1.0 / mu_ij + 1.0 / mu_i_jp1)
-            self.mxz[i, j] = 4.0 / (1.0 / mu_ij + 1.0 / mu_ip1_j + 1.0 / mu_i_jp1 + 1.0 / mu_ip1_jp1)
+            # Optimized harmonic averaging using multiplication
+            # For 2 values: H = 2*a*b/(a+b) = 2/(1/a + 1/b)
+            self.myx[i, j] = 2.0 * mu_ij * mu_ip1_j / (mu_ij + mu_ip1_j)
+            self.myz[i, j] = 2.0 * mu_ij * mu_i_jp1 / (mu_ij + mu_i_jp1)
+
+            # For 4 values: H = 4*a*b*c*d / (b*c*d + a*c*d + a*b*d + a*b*c)
+            # This reduces 4 divisions to 1 division
+            product = mu_ij * mu_ip1_j * mu_i_jp1 * mu_ip1_jp1
+            sum_inv_prod = (mu_ip1_j * mu_i_jp1 * mu_ip1_jp1 +
+                           mu_ij * mu_i_jp1 * mu_ip1_jp1 +
+                           mu_ij * mu_ip1_j * mu_ip1_jp1 +
+                           mu_ij * mu_ip1_j * mu_i_jp1)
+            self.mxz[i, j] = 4.0 * product / sum_inv_prod
 
     @ti.kernel
     def _compute_rho_avg(self):
         """Compute averaged density - parallelized."""
+        ti.loop_config(block_dim=256)  # GPU block size optimization
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
             rho_ij = self.rho_field[i, j]
             rho_ip1_j = self.rho_field[i + 1, j]
@@ -250,12 +282,38 @@ class ForwardModeling:
             self.rho_w[i, j] = 0.5 * (rho_ij + rho_i_jp1)
 
     @ti.kernel
+    def _compute_inv_rho(self):
+        """Pre-compute inverse density fields for division optimization.
+
+        Division is 10-20x slower than multiplication on both CPU and GPU.
+        By pre-computing 1/rho, we convert divisions to multiplications in
+        hot kernel loops, significantly improving performance.
+        """
+        ti.loop_config(block_dim=256)  # GPU block size optimization
+        for i, j in ti.ndrange(self.nx, self.nz):
+            self.inv_rho[i, j] = 1.0 / self.rho_field[i, j]
+            self.inv_rho_u[i, j] = 1.0 / self.rho_u[i, j]
+            self.inv_rho_w[i, j] = 1.0 / self.rho_w[i, j]
+
+    @ti.kernel
     def _update_velocity(self):
-        """Update velocity field - fully parallelized stencil computation."""
+        """Update velocity field - fully parallelized stencil computation.
+
+        Optimized with:
+        - ti.loop_config for GPU block size
+        - ti.block_local for shared memory caching
+        - Pre-computed inverse density (multiplication instead of division)
+        - Compile-time constants via ti.static
+        """
         # Use ti.static for compile-time constants
         dt = ti.static(self.dt)
         inv_dx = ti.static(1.0 / self.dx)
         inv_dz = ti.static(1.0 / self.dz)
+
+        # GPU block size optimization
+        ti.loop_config(block_dim=256)
+        # Block-local cache for improved memory access patterns
+        ti.block_local(self.sxx, self.sxz, self.szz, self.syx, self.syz)
 
         # Parallel loop over all interior points
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
@@ -265,23 +323,35 @@ class ForwardModeling:
             sxz_x = (self.sxz[i, j] - self.sxz[i - 1, j]) * inv_dx
             sxz_z = (self.sxz[i, j] - self.sxz[i, j - 1]) * inv_dz
 
-            # Update u and w velocities
-            self.u[i, j] += (sxx_x + sxz_z) * (dt / self.rho_u[i, j])
-            self.w[i, j] += (sxz_x + szz_z) * (dt / self.rho_w[i, j])
+            # Update u and w velocities (using pre-computed inverse density)
+            # Multiplication is 10-20x faster than division
+            self.u[i, j] += (sxx_x + sxz_z) * dt * self.inv_rho_u[i, j]
+            self.w[i, j] += (sxz_x + szz_z) * dt * self.inv_rho_w[i, j]
 
             # SH wave: compute stress gradients
             syx_x = (self.syx[i, j] - self.syx[i - 1, j]) * inv_dx
             syz_z = (self.syz[i, j] - self.syz[i, j - 1]) * inv_dz
 
-            # Update v velocity
-            self.v[i, j] += (syx_x + syz_z) * (dt / self.rho_field[i, j])
+            # Update v velocity (using pre-computed inverse density)
+            self.v[i, j] += (syx_x + syz_z) * dt * self.inv_rho[i, j]
 
     @ti.kernel
     def _update_stress(self):
-        """Update stress field - fully parallelized stencil computation."""
+        """Update stress field - fully parallelized stencil computation.
+
+        Optimized with:
+        - ti.loop_config for GPU block size
+        - ti.block_local for shared memory caching
+        - Compile-time constants via ti.static
+        """
         dt = ti.static(self.dt)
         inv_dx = ti.static(1.0 / self.dx)
         inv_dz = ti.static(1.0 / self.dz)
+
+        # GPU block size optimization
+        ti.loop_config(block_dim=256)
+        # Block-local cache for improved memory access patterns
+        ti.block_local(self.u, self.v, self.w)
 
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
             # Compute velocity gradients
@@ -304,7 +374,11 @@ class ForwardModeling:
 
     @ti.kernel
     def _apply_absorbing(self):
-        """Apply absorbing boundary conditions - parallelized."""
+        """Apply absorbing boundary conditions - parallelized.
+
+        Optimized with ti.loop_config for GPU block size.
+        """
+        ti.loop_config(block_dim=256)
         for i, j in self.u:
             coeff = self.absorb_coeff[i, j]
             self.u[i, j] *= coeff
@@ -335,23 +409,27 @@ class ForwardModeling:
 
     @ti.kernel
     def _add_source_kernel(self, it: ti.i32):
-        """Add source term at source locations - parallelized for multiple sources."""
+        """Add source term at source locations - parallelized for multiple sources.
+
+        Optimized: Uses pre-computed inverse density for faster execution.
+        """
         dt = ti.static(self.dt)
         dx = ti.static(self.dx)
         dz = ti.static(self.dz)
+        factor = ti.static(self.dt * self.dx * self.dz)  # Pre-computed constant
 
         for k in range(self.num_sources):
             i = self.src_loc_field[k, 0]
             j = self.src_loc_field[k, 1]
 
-            rho_u_val = self.rho_u[i, j]
-            rho_val = self.rho_field[i, j]
-            rho_w_val = self.rho_w[i, j]
+            # Use pre-computed inverse density (multiplication instead of division)
+            inv_rho_u_val = self.inv_rho_u[i, j]
+            inv_rho_val = self.inv_rho[i, j]
+            inv_rho_w_val = self.inv_rho_w[i, j]
 
-            factor = dt * dx * dz
-            self.u[i, j] += self.wavelet_u_field[k, it] * factor / rho_u_val
-            self.v[i, j] += self.wavelet_v_field[k, it] * factor / rho_val
-            self.w[i, j] += self.wavelet_w_field[k, it] * factor / rho_w_val
+            self.u[i, j] += self.wavelet_u_field[k, it] * factor * inv_rho_u_val
+            self.v[i, j] += self.wavelet_v_field[k, it] * factor * inv_rho_val
+            self.w[i, j] += self.wavelet_w_field[k, it] * factor * inv_rho_w_val
 
     @ti.kernel
     def _record_seismogram_kernel(self, it: ti.i32):
@@ -370,8 +448,11 @@ class ForwardModeling:
 
         Uses u_val != u_val pattern for NaN detection (standard IEEE-754 trick)
         and magnitude check for overflow detection.
+
+        Optimized with ti.atomic_max for minimal atomic operation overhead.
         """
         result = 0
+        ti.loop_config(block_dim=256)
         for i, j in self.u:
             u_val = self.u[i, j]
             v_val = self.v[i, j]
@@ -379,16 +460,17 @@ class ForwardModeling:
             # NaN check: NaN != NaN is True in IEEE-754
             # Overflow check: values exceeding 1e30 indicate numerical instability
             if u_val != u_val or ti.abs(u_val) > 1e30:
-                result = 1
+                ti.atomic_max(result, 1)
             if v_val != v_val or ti.abs(v_val) > 1e30:
-                result = 2
+                ti.atomic_max(result, 2)
             if w_val != w_val or ti.abs(w_val) > 1e30:
-                result = 3
+                ti.atomic_max(result, 3)
         return result
 
     @ti.kernel
     def _save_snapshot_kernel(self, snap_idx: ti.i32):
         """Save current wavefield to snapshot storage - parallelized on GPU."""
+        ti.loop_config(block_dim=256)
         for i, j in ti.ndrange(self.nx, self.nz):
             self.u_save_field[i, j, snap_idx] = self.u[i, j]
             self.v_save_field[i, j, snap_idx] = self.v[i, j]
@@ -508,6 +590,11 @@ class ForwardModeling:
         # Averaged density fields
         self.rho_u = None
         self.rho_w = None
+
+        # Pre-computed inverse density fields
+        self.inv_rho_u = None
+        self.inv_rho_w = None
+        self.inv_rho = None
 
         # Absorbing boundary coefficients
         self.absorb_coeff = None
