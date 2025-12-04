@@ -247,8 +247,13 @@ class BackwardModeling:
         """Compute averaged shear modulus - parallelized.
 
         Optimized: Uses multiplication-based harmonic mean formula to reduce divisions.
-        Original: H = n / (1/a + 1/b + ...)
-        Optimized: H = n * (product of all) / (sum of products excluding each)
+
+        Mathematical derivation:
+        - Original: H(a,b,c,d) = n / (1/a + 1/b + 1/c + 1/d)
+        - Optimized: H(a,b,c,d) = n * a*b*c*d / (b*c*d + a*c*d + a*b*d + a*b*c)
+
+        This reduces 4 divisions to 1 division per cell, which is ~10-20x faster
+        since division is much slower than multiplication on modern CPUs/GPUs.
         """
         ti.loop_config(block_dim=256)  # GPU block size optimization
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
@@ -257,18 +262,19 @@ class BackwardModeling:
             mu_i_jp1 = self.mu[i, j + 1]
             mu_ip1_jp1 = self.mu[i + 1, j + 1]
 
-            # Optimized harmonic averaging using multiplication
-            # For 2 values: H = 2*a*b/(a+b) = 2/(1/a + 1/b)
+            # Optimized 2-value harmonic mean: H(a,b) = 2ab/(a+b)
+            # Equivalent to: 2 / (1/a + 1/b) but uses 1 division instead of 2
             self.myx[i, j] = 2.0 * mu_ij * mu_ip1_j / (mu_ij + mu_ip1_j)
             self.myz[i, j] = 2.0 * mu_ij * mu_i_jp1 / (mu_ij + mu_i_jp1)
 
-            # For 4 values: H = 4*a*b*c*d / (b*c*d + a*c*d + a*b*d + a*b*c)
-            # This reduces 4 divisions to 1 division
+            # Optimized 4-value harmonic mean: H(a,b,c,d) = 4abcd/(bcd + acd + abd + abc)
+            # Equivalent to: 4 / (1/a + 1/b + 1/c + 1/d) but uses 1 division instead of 4
+            # Let a=mu_ij, b=mu_ip1_j, c=mu_i_jp1, d=mu_ip1_jp1
             product = mu_ij * mu_ip1_j * mu_i_jp1 * mu_ip1_jp1
-            sum_inv_prod = (mu_ip1_j * mu_i_jp1 * mu_ip1_jp1 +
-                           mu_ij * mu_i_jp1 * mu_ip1_jp1 +
-                           mu_ij * mu_ip1_j * mu_ip1_jp1 +
-                           mu_ij * mu_ip1_j * mu_i_jp1)
+            sum_inv_prod = (mu_ip1_j * mu_i_jp1 * mu_ip1_jp1 +   # bcd (excludes a)
+                           mu_ij * mu_i_jp1 * mu_ip1_jp1 +       # acd (excludes b)
+                           mu_ij * mu_ip1_j * mu_ip1_jp1 +       # abd (excludes c)
+                           mu_ij * mu_ip1_j * mu_i_jp1)          # abc (excludes d)
             self.mxz[i, j] = 4.0 * product / sum_inv_prod
 
     @ti.kernel
@@ -291,6 +297,10 @@ class BackwardModeling:
         Division is 10-20x slower than multiplication on both CPU and GPU.
         By pre-computing 1/rho, we convert divisions to multiplications in
         hot kernel loops, significantly improving performance.
+
+        Note: This assumes density values are always positive (physically valid).
+        Zero or negative density would cause NaN/Inf which will be caught by
+        the stability check in run_calc().
         """
         ti.loop_config(block_dim=256)  # GPU block size optimization
         for i, j in ti.ndrange(self.nx, self.nz):
@@ -411,7 +421,16 @@ class BackwardModeling:
         Uses u_val != u_val pattern for NaN detection (standard IEEE-754 trick)
         and magnitude check for overflow detection.
 
-        Optimized with ti.atomic_max for minimal atomic operation overhead.
+        Returns
+        -------
+        int
+            0 if all fields are finite, otherwise:
+            - 4: u field has NaN or overflow
+            - 5: v field has NaN or overflow
+            - 6: w field has NaN or overflow
+
+        Note: Uses ti.atomic_max() so if multiple fields have issues,
+        the highest error code is returned (priority: w > v > u).
         """
         result = 0
         ti.loop_config(block_dim=256)

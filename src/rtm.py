@@ -65,6 +65,7 @@ def init_taichi(backend: str = 'cpu', extreme_optimization: bool = False, **kwar
         If True, enables additional dangerous optimizations that may sacrifice
         numerical precision for performance. This includes:
         - fast_math=True: Ignores IEEE-754 compliance for NaN/Inf handling
+          (WARNING: This overrides user-provided fast_math=False setting)
         - cfg_optimization=True: Control flow graph optimization
         Default is False.
     **kwargs
@@ -84,6 +85,8 @@ def init_taichi(backend: str = 'cpu', extreme_optimization: bool = False, **kwar
     -------
     These optimizations may affect numerical precision. For production use
     with high precision requirements, consider setting fast_math=False.
+    When extreme_optimization=True, fast_math is forcefully enabled regardless
+    of user settings, which may cause unexpected numerical behavior.
     """
     arch_map = {
         'cpu': ti.cpu,
@@ -119,6 +122,7 @@ def init_taichi(backend: str = 'cpu', extreme_optimization: bool = False, **kwar
     # Apply extreme optimizations if requested
     if extreme_optimization:
         # Force fast_math even if user tries to disable it
+        # WARNING: This overrides user settings for maximum performance
         kwargs['fast_math'] = True
         # Enable CFG optimization for control flow optimization
         kwargs.setdefault('cfg_optimization', True)
