@@ -33,9 +33,112 @@ import taichi as ti
 import numpy as np
 from typing import Optional, Callable
 import os
+import subprocess
 
 from .forward_modeling import ForwardModeling
 from .backward_modeling import BackwardModeling
+
+
+def get_system_memory_mb() -> int:
+    """
+    Get total system memory in MiB using cross-platform methods.
+    
+    Returns
+    -------
+    int
+        Total system memory in MiB
+    """
+    try:
+        # Try reading from /proc/meminfo (Linux)
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
+                    # Line format: "MemTotal:       16345712 kB"
+                    parts = line.split()
+                    mem_kb = int(parts[1])
+                    return mem_kb // 1024
+    except (FileNotFoundError, PermissionError, ValueError):
+        pass
+    
+    try:
+        # Fallback: use 'free' command (Linux)
+        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                if line.startswith('Mem:'):
+                    parts = line.split()
+                    return int(parts[1])
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    
+    # Default fallback: assume 8GB
+    return 8000
+
+
+def get_available_memory_mb() -> int:
+    """
+    Get available system memory in MiB.
+    
+    Returns
+    -------
+    int
+        Available system memory in MiB
+    """
+    try:
+        # Try reading from /proc/meminfo (Linux)
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    parts = line.split()
+                    mem_kb = int(parts[1])
+                    return mem_kb // 1024
+    except (FileNotFoundError, PermissionError, ValueError):
+        pass
+    
+    try:
+        # Fallback: use 'free' command (Linux)
+        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                if line.startswith('Mem:'):
+                    parts = line.split()
+                    return int(parts[6])  # 'available' column
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
+        pass
+    
+    # Default fallback: assume 4GB available
+    return 4000
+
+
+def calculate_optimal_memory_params(target_usage_ratio: float = 0.8) -> tuple:
+    """
+    Calculate optimal memory parameters for RTM processing.
+    
+    Parameters
+    ----------
+    target_usage_ratio : float
+        Target ratio of available memory to use (default: 0.8 = 80%)
+        
+    Returns
+    -------
+    tuple
+        (total_memory_mb, memory_margin_mb) for RTM.run()
+    """
+    available_mb = get_available_memory_mb()
+    total_mb = get_system_memory_mb()
+    
+    # Use target_usage_ratio of available memory
+    target_memory = int(available_mb * target_usage_ratio)
+    
+    # Memory margin should be at least 500MB, or 10% of target
+    memory_margin = max(500, int(target_memory * 0.1))
+    
+    print(f"System memory: {total_mb} MiB total, {available_mb} MiB available")
+    print(f"Target memory usage: {target_memory} MiB ({target_usage_ratio*100:.0f}% of available)")
+    
+    return target_memory, memory_margin
 
 
 def init_taichi(backend: str = 'cpu', **kwargs):
@@ -272,23 +375,13 @@ class ReverseTimeMigration:
         
     def _compute_isnap(self, total_memory: int, memory_margin: int, 
                        nx: int, nz: int, nt: int) -> int:
-        """Compute snapshot interval based on available memory."""
-        dtype_size = 4  # float32 bytes
-        num_components = 3  # u, v, w velocity components
-        allowed_memory = (total_memory - memory_margin) * 1024 * 1024
-        max_steps = allowed_memory // (nx * nz * dtype_size) // num_components
-        
-        if max_steps == 0:
-            return nt
-        return max(1, int(np.ceil(nt / max_steps)))
-        
-    def run(self, 
-            total_memory: int = 24000,
-            memory_margin: int = 2000,
-            method: str = 'cross_correlation',
-            display_callback: Optional[Callable] = None):
         """
-        Run Reverse Time Migration.
+        Compute snapshot interval based on available memory.
+        
+        This function calculates the optimal snapshot interval to maximize
+        memory usage while staying within the available memory budget.
+        A smaller isnap means more snapshots and better imaging quality
+        at the cost of more memory.
         
         Parameters
         ----------
@@ -296,11 +389,91 @@ class ReverseTimeMigration:
             Total available memory in MiB
         memory_margin : int
             Memory margin in MiB
+        nx : int
+            Grid size in x direction
+        nz : int
+            Grid size in z direction
+        nt : int
+            Number of time steps
+            
+        Returns
+        -------
+        int
+            Snapshot interval (minimum 1)
+        """
+        dtype_size = 4  # float32 bytes
+        num_components = 3  # u, v, w velocity components
+        
+        # Calculate memory per snapshot in bytes
+        bytes_per_snapshot = nx * nz * dtype_size * num_components
+        
+        # Available memory for snapshots (in bytes)
+        # Reserve memory for stress fields, velocity fields, and other data structures
+        # Each field is nx*nz*float32, we have about 20 fields total (stress, velocity, material, etc.)
+        num_fields = 20
+        field_memory = num_fields * nx * nz * dtype_size
+        
+        # Account for observed data and source wavelets
+        # observed: num_receivers * nt * 3 * 4 bytes
+        # source: num_sources * nt * 3 * 4 bytes  
+        # Estimate conservatively with 100 receivers and 3 sources
+        data_memory = (100 + 3) * nt * num_components * dtype_size
+        
+        # Base memory overhead (Taichi, Python, etc.) - roughly 500MB
+        base_overhead = 500 * 1024 * 1024
+        
+        allowed_memory = (total_memory - memory_margin) * 1024 * 1024 - field_memory - data_memory - base_overhead
+        
+        if allowed_memory <= 0:
+            print(f"Warning: Very limited memory available, using minimum snapshots")
+            return nt  # Minimum snapshots
+            
+        max_snapshots = allowed_memory // bytes_per_snapshot
+        
+        if max_snapshots <= 0:
+            return nt
+        if max_snapshots >= nt:
+            return 1  # Save every timestep
+            
+        isnap = max(1, int(np.ceil(nt / max_snapshots)))
+        
+        # Calculate actual memory usage for logging
+        actual_snapshots = nt // isnap
+        actual_memory_mb = (actual_snapshots * bytes_per_snapshot) / (1024 * 1024)
+        print(f"Snapshot settings: isnap={isnap}, num_snapshots={actual_snapshots}, snapshot_memory={actual_memory_mb:.0f} MiB")
+        
+        return isnap
+        
+    def run(self, 
+            total_memory: Optional[int] = None,
+            memory_margin: Optional[int] = None,
+            method: str = 'cross_correlation',
+            display_callback: Optional[Callable] = None,
+            target_memory_ratio: float = 0.8):
+        """
+        Run Reverse Time Migration.
+        
+        Parameters
+        ----------
+        total_memory : int, optional
+            Total available memory in MiB. If None, auto-detect.
+        memory_margin : int, optional
+            Memory margin in MiB. If None, auto-calculate.
         method : str
             Imaging condition method
         display_callback : callable, optional
             Callback for displaying wavefield during simulation
+        target_memory_ratio : float
+            Target ratio of available memory to use when auto-detecting (default: 0.8 = 80%)
         """
+        # Auto-detect memory parameters if not provided
+        if total_memory is None or memory_margin is None:
+            auto_total, auto_margin = calculate_optimal_memory_params(target_memory_ratio)
+            if total_memory is None:
+                total_memory = auto_total
+            if memory_margin is None:
+                memory_margin = auto_margin
+        
         if self.v_fix is not None:
             print(f'Using fixed velocity: {self.v_fix} m/s')
             estimated_v = self.v_fix

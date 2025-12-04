@@ -19,7 +19,7 @@ Coordinate system:
 
 Note on performance:
 - Grid size scales with (receiver_distance / velocity * fs)^2
-- Reduce fs (sampling frequency) or time_to for faster processing
+- Memory usage is automatically optimized to use ~80% of available RAM
 - Use GPU backend ('cuda' or 'vulkan') for better performance
 """
 
@@ -32,7 +32,12 @@ src_dir = os.path.dirname(script_dir)
 sys.path.insert(0, src_dir)
 
 import numpy as np
-from src import ReverseTimeMigration, init_taichi, create_visualization_data
+from src import (
+    ReverseTimeMigration,
+    init_taichi,
+    create_visualization_data,
+    calculate_optimal_memory_params,
+)
 import glob
 
 
@@ -121,14 +126,106 @@ def save_result_images(rtm_instance, output_dir: str, name: str):
         print("matplotlib not available, cannot save images")
 
 
+def process_single_file(npz_path: str, output_dir: str, 
+                        sampling_freq: float, time_to: float, 
+                        velocity: float, num_receivers: int,
+                        absorbing_frame: int, target_memory_ratio: float):
+    """
+    Process a single NPZ data file.
+    
+    Parameters
+    ----------
+    npz_path : str
+        Path to the NPZ data file
+    output_dir : str
+        Output directory for results
+    sampling_freq : float
+        Sampling frequency in Hz
+    time_to : float
+        Simulation duration in seconds
+    velocity : float
+        Wave velocity in m/s
+    num_receivers : int
+        Number of receivers to use
+    absorbing_frame : int
+        Width of absorbing boundary
+    target_memory_ratio : float
+        Target ratio of available memory to use (0.0-1.0)
+    """
+    print(f"\nProcessing: {os.path.basename(npz_path)}")
+    
+    npz = np.load(npz_path)
+    
+    # Use specified number of receivers
+    receiver_step = max(1, len(npz['distance']) // num_receivers)
+    distance = npz['distance'][::receiver_step][:num_receivers]
+    
+    source_x = float(npz['source_x'])
+    source_ch = get_source_ch(npz['distance'], source_x)
+    
+    fs = float(sampling_freq)
+    original_fs = 100000.0
+    downsample_factor = max(1, int(original_fs / fs))
+    original_samples = int(original_fs * time_to)
+    
+    # Subset receivers and time samples
+    receiver_indices = slice(None, None, receiver_step)
+    time_indices = slice(None, original_samples, downsample_factor)
+    
+    observed_u = npz['x'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
+    observed_v = npz['y'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
+    observed_w = npz['z'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
+    
+    source_u = npz['x'][source_ch, time_indices].astype(np.float32)
+    source_v = npz['y'][source_ch, time_indices].astype(np.float32)
+    source_w = npz['z'][source_ch, time_indices].astype(np.float32)
+    
+    print(f"  Receivers: {len(distance)}, Samples: {observed_u.shape[1]}")
+    print(f"  Sampling freq: {fs} Hz, Duration: {time_to} s")
+    
+    # Create RTM instance
+    rtm = ReverseTimeMigration(
+        observed_u=observed_u,
+        observed_v=observed_v,
+        observed_w=observed_w,
+        source_u=source_u,
+        source_v=source_v,
+        source_w=source_w,
+        receiver_loc=distance,
+        source_loc=source_x,
+        fs=fs,
+        vmin=80,
+        vmax=300,
+        vstep=100,
+        v_fix=velocity,
+        absorbing_frame=absorbing_frame,
+    )
+    
+    # Run RTM with auto-detected memory parameters
+    rtm.run(target_memory_ratio=target_memory_ratio)
+    
+    # Save results
+    savename = os.path.splitext(os.path.basename(npz_path))[0]
+    rtm.save_result(directory=os.path.join(output_dir, 'data'), savename=savename)
+    
+    # Save visualization
+    save_result_images(rtm, os.path.join(output_dir, 'RTMimages'), savename)
+    
+    return rtm
+
+
 def main():
     """Main function to run RTM example."""
     
-    # Initialize Taichi - can use 'cpu', 'gpu', 'cuda', 'vulkan'
-    # Change backend here based on your hardware
+    # Initialize Taichi - try GPU first, fall back to CPU
+    # 'gpu' will auto-select the best available GPU backend
     backend = 'cpu'  # Options: 'cpu', 'gpu', 'cuda', 'vulkan'
     print(f"Initializing Taichi with backend: {backend}")
     init_taichi(backend=backend)
+    
+    # Calculate and display optimal memory parameters
+    total_mem, margin = calculate_optimal_memory_params(target_usage_ratio=0.8)
+    print(f"Optimal memory settings: total={total_mem} MiB, margin={margin} MiB")
     
     # Data directory - use absolute path based on script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -142,80 +239,33 @@ def main():
         
     print(f"Found {len(npzs_path_list)} data files")
     
-    # Parameters
-    # Note: For large datasets, consider reducing sampling_freq or time_to
-    # to reduce memory usage and processing time
-    sampling_freq = 50000  # Hz (downsampled from original 100000 Hz)
-    time_to = 0.05  # seconds (use shorter time for faster demo)
+    # Parameters - optimized for better memory and GPU utilization
+    # Higher sampling frequency and longer duration = more data = better utilization
+    sampling_freq = 100000  # Hz (full original sampling rate)
+    time_to = 0.08  # seconds (longer simulation time)
     velocity = 120  # m/s
+    num_receivers = 60  # Use all 60 receivers
+    absorbing_frame = 50  # Standard absorbing frame size
+    target_memory_ratio = 0.8  # Use 80% of available memory
     
     # Output directory
     output_dir = os.path.join(script_dir, 'results')
     os.makedirs(output_dir, exist_ok=True)
     
-    # Process first data file for demo
-    for npz_path in npzs_path_list[:1]:
-        print(f"\nProcessing: {os.path.basename(npz_path)}")
-        
-        npz = np.load(npz_path)
-        
-        # Use subset of receivers for faster processing (20 receivers instead of 60)
-        num_receivers = 20
-        receiver_step = max(1, len(npz['distance']) // num_receivers)
-        distance = npz['distance'][::receiver_step][:num_receivers]
-        
-        source_x = float(npz['source_x'])
-        source_ch = get_source_ch(npz['distance'], source_x)  # Use original distance for source channel
-        
-        fs = float(sampling_freq)
-        original_fs = 100000.0
-        downsample_factor = int(original_fs / fs)
-        original_samples = int(original_fs * time_to)
-        
-        # Downsample and subset the data for manageable grid size
-        # Step 1: Select subset of receivers (every Nth receiver)
-        receiver_indices = slice(None, None, receiver_step)
-        # Step 2: Select time samples up to time_to and downsample
-        time_indices = slice(None, original_samples, downsample_factor)
-        
-        observed_u = npz['x'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
-        observed_v = npz['y'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
-        observed_w = npz['z'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
-        
-        source_u = npz['x'][source_ch, time_indices].astype(np.float32)
-        source_v = npz['y'][source_ch, time_indices].astype(np.float32)
-        source_w = npz['z'][source_ch, time_indices].astype(np.float32)
-        
-        print(f"  Receivers: {len(distance)}, Samples: {observed_u.shape[1]}")
-        print(f"  Sampling freq: {fs} Hz, Duration: {time_to} s")
-        
-        # Create RTM instance
-        rtm = ReverseTimeMigration(
-            observed_u=observed_u,
-            observed_v=observed_v,
-            observed_w=observed_w,
-            source_u=source_u,
-            source_v=source_v,
-            source_w=source_w,
-            receiver_loc=distance,
-            source_loc=source_x,
-            fs=fs,
-            vmin=80,
-            vmax=300,
-            vstep=100,
-            v_fix=velocity,
-            absorbing_frame=30,  # Smaller absorbing frame for demo
+    # Process data files
+    # Note: For true parallel processing of multiple files, consider using
+    # multiprocessing with separate Taichi contexts per process
+    for npz_path in npzs_path_list[:1]:  # Process first file for demo
+        process_single_file(
+            npz_path=npz_path,
+            output_dir=output_dir,
+            sampling_freq=sampling_freq,
+            time_to=time_to,
+            velocity=velocity,
+            num_receivers=num_receivers,
+            absorbing_frame=absorbing_frame,
+            target_memory_ratio=target_memory_ratio,
         )
-        
-        # Run RTM
-        rtm.run(total_memory=8000, memory_margin=1000)
-        
-        # Save results
-        savename = os.path.splitext(os.path.basename(npz_path))[0]
-        rtm.save_result(directory=os.path.join(output_dir, 'data'), savename=savename)
-        
-        # Save visualization
-        save_result_images(rtm, os.path.join(output_dir, 'RTMimages'), savename)
         
     print("\nProcessing complete!")
 
