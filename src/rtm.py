@@ -55,9 +55,10 @@ def get_system_memory_mb() -> int:
                 if line.startswith('MemTotal:'):
                     # Line format: "MemTotal:       16345712 kB"
                     parts = line.split()
-                    mem_kb = int(parts[1])
-                    return mem_kb // 1024
-    except (FileNotFoundError, PermissionError, ValueError):
+                    if len(parts) >= 2:
+                        mem_kb = int(parts[1])
+                        return mem_kb // 1024
+    except (FileNotFoundError, PermissionError, ValueError, IndexError):
         pass
     
     try:
@@ -68,8 +69,9 @@ def get_system_memory_mb() -> int:
             for line in lines:
                 if line.startswith('Mem:'):
                     parts = line.split()
-                    return int(parts[1])
-    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
         pass
     
     # Default fallback: assume 8GB
@@ -91,20 +93,23 @@ def get_available_memory_mb() -> int:
             for line in f:
                 if line.startswith('MemAvailable:'):
                     parts = line.split()
-                    mem_kb = int(parts[1])
-                    return mem_kb // 1024
-    except (FileNotFoundError, PermissionError, ValueError):
+                    if len(parts) >= 2:
+                        mem_kb = int(parts[1])
+                        return mem_kb // 1024
+    except (FileNotFoundError, PermissionError, ValueError, IndexError):
         pass
     
     try:
         # Fallback: use 'free' command (Linux)
+        # Format: "Mem:  total  used  free  shared  buff/cache  available"
         result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             lines = result.stdout.strip().split('\n')
             for line in lines:
                 if line.startswith('Mem:'):
                     parts = line.split()
-                    return int(parts[6])  # 'available' column
+                    if len(parts) >= 7:
+                        return int(parts[6])  # 'available' column
     except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
         pass
     
