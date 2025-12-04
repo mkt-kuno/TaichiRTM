@@ -296,9 +296,14 @@ class ReverseTimeMigration:
         A smaller isnap means more snapshots and better imaging quality at the 
         cost of more memory.
         
-        Since ForwardModeling and BackwardModeling don't run simultaneously,
-        we use the larger of the two estimated memory requirements and subtract
-        from the total budget to determine available memory for snapshots.
+        Memory allocation during RTM run:
+        1. Input fields (shared): mu, lam, rho, src_loc, recv_loc, wavelets, surface_matrix
+        2. ForwardModeling: grid fields (17) + seismograms
+        3. Snapshot storage: u_save, v_save, w_save, isnaps (3*nx*nz*num_snaps + num_snaps)
+        4. Observed data fields: obsdata_u, obsdata_v, obsdata_w
+        5. BackwardModeling: grid fields (20) + synthetic source
+        
+        During backward modeling, forward snapshots still exist in memory.
         
         Parameters
         ----------
@@ -319,35 +324,63 @@ class ReverseTimeMigration:
             Snapshot interval (minimum 1)
         """
         dtype_size = 4  # float32 bytes
+        int_size = 4    # int32 bytes
         num_components = 3  # u, v, w velocity components
 
         # Total available memory budget (in bytes)
         total_memory_bytes = int(self.total_allocate_memory_gb * 1024 * 1024 * 1024)
 
-        # Estimate memory for ForwardModeling and BackwardModeling
+        # === Input fields allocated in run() before ForwardModeling ===
+        # Material fields: mu_field, lam_field, rho_field_input = 3 fields
+        input_material_memory = 3 * nx * nz * dtype_size
+        
+        # Location fields: src_loc_field, recv_loc_field (int32)
+        input_location_memory = (num_sources * 2 + num_receivers * 2) * int_size
+        
+        # Wavelet fields: wavelet_u_field, wavelet_v_field, wavelet_w_field
+        input_wavelet_memory = 3 * num_sources * nt * dtype_size
+        
+        # Surface matrix field (optional, assume allocated)
+        input_surface_memory = nx * nz * dtype_size
+        
+        total_input_memory = (input_material_memory + input_location_memory + 
+                              input_wavelet_memory + input_surface_memory)
+
+        # === ForwardModeling memory ===
         fw_memory = ForwardModeling.estimate_memory_bytes(nx, nz, nt, num_sources, num_receivers)
+
+        # === Observed data fields allocated before BackwardModeling ===
+        observed_data_memory = 3 * num_receivers * nt * dtype_size
+
+        # === BackwardModeling memory ===
         bw_memory = BackwardModeling.estimate_memory_bytes(nx, nz, nt, num_sources, num_receivers)
 
-        # Use the larger of the two since they don't run simultaneously
-        modeling_memory = max(fw_memory, bw_memory)
+        # === Fixed memory (always allocated regardless of snapshots) ===
+        # During backward modeling: input fields + fw_memory + observed_data + bw_memory + snapshots
+        # This is the peak memory usage
+        fixed_memory = total_input_memory + fw_memory + observed_data_memory + bw_memory
 
-        # Calculate memory per snapshot in bytes (for u, v, w velocity fields)
+        # === Memory per snapshot ===
+        # u_save_field, v_save_field, w_save_field (each nx*nz*num_snaps)
         bytes_per_snapshot = nx * nz * dtype_size * num_components
+        # isnaps_field overhead per snapshot
+        isnaps_overhead_per_snap = int_size
 
-        # Base memory overhead (Taichi runtime, Python, etc.) - roughly 500MB
-        base_overhead = 500 * 1024 * 1024
+        # Base memory overhead (Taichi runtime, JIT compilation cache, etc.)
+        base_overhead = 300 * 1024 * 1024  # 300 MB
 
-        # Memory margin (10% of total)
-        memory_margin = int(total_memory_bytes * 0.1)
+        # Memory margin (5% of total for safety)
+        memory_margin = int(total_memory_bytes * 0.05)
 
-        # Available memory for snapshots = total - modeling - overhead - margin
-        available_for_snapshots = total_memory_bytes - modeling_memory - base_overhead - memory_margin
+        # Available memory for snapshots
+        available_for_snapshots = total_memory_bytes - fixed_memory - base_overhead - memory_margin
 
         if available_for_snapshots <= 0:
             print(f"Warning: Very limited memory available ({self.total_allocate_memory_gb:.1f} GB), using minimum snapshots")
+            print(f"  Fixed memory requirement: {fixed_memory / (1024**3):.2f} GB")
             return nt  # Minimum snapshots
 
-        max_snapshots = available_for_snapshots // bytes_per_snapshot
+        max_snapshots = available_for_snapshots // (bytes_per_snapshot + isnaps_overhead_per_snap)
 
         if max_snapshots <= 0:
             return nt
@@ -358,13 +391,18 @@ class ReverseTimeMigration:
 
         # Calculate actual memory usage for logging
         actual_snapshots = nt // isnap
-        actual_snapshot_memory_mb = (actual_snapshots * bytes_per_snapshot) / (1024 * 1024)
-        total_memory_mb = self.total_allocate_memory_gb * 1024
-        modeling_memory_mb = modeling_memory / (1024 * 1024)
-        print(f"Memory estimate: modeling={modeling_memory_mb:.0f} MiB, "
-              f"snapshots={actual_snapshot_memory_mb:.0f} MiB ({actual_snapshots} snapshots), "
-              f"total budget={total_memory_mb:.0f} MiB")
-        print(f"Snapshot settings: isnap={isnap}")
+        actual_snapshot_memory = actual_snapshots * (bytes_per_snapshot + isnaps_overhead_per_snap)
+        total_estimated_memory = fixed_memory + actual_snapshot_memory + base_overhead
+        
+        print(f"Memory estimate (detailed):")
+        print(f"  Input fields: {total_input_memory / (1024**2):.1f} MiB")
+        print(f"  ForwardModeling: {fw_memory / (1024**2):.1f} MiB")
+        print(f"  Observed data: {observed_data_memory / (1024**2):.1f} MiB")
+        print(f"  BackwardModeling: {bw_memory / (1024**2):.1f} MiB")
+        print(f"  Snapshots ({actual_snapshots}): {actual_snapshot_memory / (1024**2):.1f} MiB")
+        print(f"  Base overhead: {base_overhead / (1024**2):.1f} MiB")
+        print(f"  Total estimated: {total_estimated_memory / (1024**2):.1f} MiB / {total_memory_bytes / (1024**2):.1f} MiB budget")
+        print(f"  Snapshot interval: isnap={isnap}")
 
         return isnap
 
