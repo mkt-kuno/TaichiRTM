@@ -46,3 +46,11 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Example outputs (regenerated on run)
+examples/results/data/
+examples/results/RTMimages/*.png
+!examples/results/RTMimages/120.png
+!examples/results/RTMimages/x_120.png
+!examples/results/RTMimages/y_120.png
+!examples/results/RTMimages/z_120.png
