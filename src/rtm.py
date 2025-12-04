@@ -442,10 +442,11 @@ class ReverseTimeMigration:
             )
             
             flag = bw.run_calc(
-                import_fwdata_u=fw.u_save,
-                import_fwdata_v=fw.v_save,
-                import_fwdata_w=fw.w_save,
+                import_fwdata_u=fw.u_save_field,
+                import_fwdata_v=fw.v_save_field,
+                import_fwdata_w=fw.w_save_field,
                 isnaps=fw.isnaps,
+                num_snaps=fw.num_snaps,
                 method=method,
                 display_callback=display_callback
             )

@@ -411,6 +411,14 @@ class ForwardModeling:
                 result = 3
         return result
             
+    @ti.kernel
+    def _save_snapshot_kernel(self, snap_idx: ti.i32):
+        """Save current wavefield to snapshot storage - parallelized on GPU."""
+        for i, j in ti.ndrange(self.nx, self.nz):
+            self.u_save_field[i, j, snap_idx] = self.u[i, j]
+            self.v_save_field[i, j, snap_idx] = self.v[i, j]
+            self.w_save_field[i, j, snap_idx] = self.w[i, j]
+
     def run(self, 
             save: bool = False,
             display_callback: Optional[Callable] = None,
@@ -439,10 +447,12 @@ class ForwardModeling:
         """
         if save:
             num_snaps = self.nt // self.isnap
-            self.u_save = np.zeros((self.nx, self.nz, num_snaps), dtype=np.float32)
-            self.v_save = np.zeros((self.nx, self.nz, num_snaps), dtype=np.float32)
-            self.w_save = np.zeros((self.nx, self.nz, num_snaps), dtype=np.float32)
+            # Store snapshots in Taichi fields (GPU memory) instead of NumPy arrays
+            self.u_save_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz, num_snaps))
+            self.v_save_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz, num_snaps))
+            self.w_save_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz, num_snaps))
             self.isnaps = np.zeros(num_snaps, dtype=np.int32)
+            self.num_snaps = num_snaps
             
         for it in range(self.nt):
             # Apply boundary conditions
@@ -473,12 +483,10 @@ class ForwardModeling:
                 if flag != 0:
                     return flag
                     
-            # Save snapshots
+            # Save snapshots to Taichi fields (GPU memory)
             if save and it % self.isnap == 0 and it != 0:
                 snap_idx = it // self.isnap - 1
-                self.u_save[:, :, snap_idx] = self.u.to_numpy()
-                self.v_save[:, :, snap_idx] = self.v.to_numpy()
-                self.w_save[:, :, snap_idx] = self.w.to_numpy()
+                self._save_snapshot_kernel(snap_idx)
                 self.isnaps[snap_idx] = it
                 
         print('Forward modeling completed')
