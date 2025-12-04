@@ -189,6 +189,7 @@ class ReverseTimeMigration:
         # Internal tracking
         self._fw_instance = None
         self._bw_instance = None
+        self._run_fields = []  # Track Taichi fields created in run()
 
         # If kwargs provided, use legacy API
         if kwargs:
@@ -248,12 +249,20 @@ class ReverseTimeMigration:
         self.cleanup()
         return False
 
-    def cleanup(self):
+    def cleanup(self, reset_taichi_runtime: bool = True):
         """
         Release Taichi fields and internal resources.
 
         Call this method to free GPU/CPU memory when the RTM instance is no longer
         needed. This is automatically called when using the context manager.
+
+        Parameters
+        ----------
+        reset_taichi_runtime : bool
+            If True (default), calls ti.reset() to fully release GPU/CPU memory.
+            This is necessary because Taichi fields cannot be individually deallocated.
+            Note: This will clear JIT compilation cache, causing recompilation on
+            the next run. Set to False if you want to preserve JIT cache.
         """
         # Cleanup ForwardModeling instance
         if self._fw_instance is not None:
@@ -264,6 +273,14 @@ class ReverseTimeMigration:
         if self._bw_instance is not None:
             self._bw_instance.cleanup()
             self._bw_instance = None
+
+        # Clear references to fields created in run()
+        self._run_fields.clear()
+
+        # Reset Taichi runtime to actually release memory
+        # This is the only way to deallocate Taichi fields
+        if reset_taichi_runtime:
+            ti.reset()
 
     # ==================== Fluent API Methods ====================
 
@@ -823,12 +840,14 @@ class ReverseTimeMigration:
             mu_field.from_numpy(mu_np)
             lam_field.from_numpy(lam_np)
             rho_field_input.from_numpy(rho)
+            self._run_fields.extend([mu_field, lam_field, rho_field_input])
 
             # Create location fields
             src_loc_field = ti.field(dtype=ti.i32, shape=(num_sources, 2))
             recv_loc_field = ti.field(dtype=ti.i32, shape=(num_receivers, 2))
             src_loc_field.from_numpy(np.array(src_loc_step, dtype=np.int32))
             recv_loc_field.from_numpy(np.array(receiver_loc_step, dtype=np.int32))
+            self._run_fields.extend([src_loc_field, recv_loc_field])
 
             # Create wavelet fields
             wavelet_u_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
@@ -837,12 +856,14 @@ class ReverseTimeMigration:
             wavelet_u_field.from_numpy(np.asarray(wavelet_u, dtype=np.float32))
             wavelet_v_field.from_numpy(np.asarray(wavelet_v, dtype=np.float32))
             wavelet_w_field.from_numpy(np.asarray(wavelet_w, dtype=np.float32))
+            self._run_fields.extend([wavelet_u_field, wavelet_v_field, wavelet_w_field])
 
             # Create surface matrix field (optional)
             surface_matrix_field = None
             if surface_matrix is not None:
                 surface_matrix_field = ti.field(dtype=ti.f32, shape=(nx, nz))
                 surface_matrix_field.from_numpy(np.asarray(surface_matrix, dtype=np.float32))
+                self._run_fields.append(surface_matrix_field)
 
             fw = ForwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
@@ -881,6 +902,7 @@ class ReverseTimeMigration:
             obsdata_u_field.from_numpy(self.observed_u)
             obsdata_v_field.from_numpy(self.observed_v)
             obsdata_w_field.from_numpy(self.observed_w)
+            self._run_fields.extend([obsdata_u_field, obsdata_v_field, obsdata_w_field])
 
             bw = BackwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
