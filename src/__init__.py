@@ -36,6 +36,11 @@ from .rtm import (
     init_taichi,
     reset_taichi,
 )
+from .visualization import (
+    RTMViewer,
+    create_realtime_callback,
+    save_image_numpy,
+)
 
 __version__ = '2.0.0'
 __author__ = 'Yutaro Hara'
@@ -52,4 +57,7 @@ __all__ = [
     'prepare_image_data',
     'create_visualization_data',
     'save_stacked_results',
+    'RTMViewer',
+    'create_realtime_callback',
+    'save_image_numpy',
 ]
