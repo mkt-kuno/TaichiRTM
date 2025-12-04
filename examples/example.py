@@ -196,6 +196,7 @@ def process_single_file(npz_path: str, output_dir: str,
         vstep=100,
         v_fix=velocity,
         absorbing_frame=absorbing_frame,
+        total_allocate_memory_gb=6
     )
     
     # Run RTM
@@ -216,7 +217,7 @@ def main():
     
     # Initialize Taichi - try GPU first, fall back to CPU
     # 'gpu' will auto-select the best available GPU backend
-    backend = 'cpu'  # Options: 'cpu', 'gpu', 'cuda', 'vulkan'
+    backend = 'gpu'  # Options: 'cpu', 'gpu', 'cuda', 'vulkan'
     print(f"Initializing Taichi with backend: {backend}")
     init_taichi(backend=backend)
     
@@ -255,7 +256,7 @@ def main():
             time_to=time_to,
             velocity=velocity,
             num_receivers=num_receivers,
-            absorbing_frame=absorbing_frame,
+            absorbing_frame=absorbing_frame
         )
         
     print("\nProcessing complete!")
