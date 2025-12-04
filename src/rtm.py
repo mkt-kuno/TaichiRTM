@@ -53,16 +53,40 @@ def reset_taichi():
     ti.reset()
 
 
-def init_taichi(backend: str = 'cpu', **kwargs):
+def init_taichi(backend: str = 'cpu', extreme_optimization: bool = False, **kwargs):
     """
-    Initialize Taichi with specified backend.
+    Initialize Taichi with specified backend and optimizations.
 
     Parameters
     ----------
     backend : str
         Backend to use: 'cpu', 'gpu', 'cuda', 'vulkan', 'opengl', 'metal'
+    extreme_optimization : bool
+        If True, enables additional dangerous optimizations that may sacrifice
+        numerical precision for performance. This includes:
+        - fast_math=True: Ignores IEEE-754 compliance for NaN/Inf handling
+          (WARNING: This overrides user-provided fast_math=False setting)
+        - cfg_optimization=True: Control flow graph optimization
+        Default is False.
     **kwargs
         Additional arguments passed to ti.init()
+
+    Notes
+    -----
+    The following optimizations are applied by default:
+    - advanced_optimization=True: Enable advanced compiler optimizations
+    - fast_math=True: Enable fast math (disable for ti.f64 precision)
+    - offline_cache=True: AOT cache for JIT compilation time reduction
+    - device_memory_fraction=0.9: Maximum GPU memory utilization
+    - kernel_profiler=False: Disable profiler overhead
+    - debug=False: Disable debug mode
+
+    Warning
+    -------
+    These optimizations may affect numerical precision. For production use
+    with high precision requirements, consider setting fast_math=False.
+    When extreme_optimization=True, fast_math is forcefully enabled regardless
+    of user settings, which may cause unexpected numerical behavior.
     """
     arch_map = {
         'cpu': ti.cpu,
@@ -75,13 +99,33 @@ def init_taichi(backend: str = 'cpu', **kwargs):
 
     arch = arch_map.get(backend.lower(), ti.cpu)
 
-    # Set defaults for advanced_optimization and fast_math
-    if 'advanced_optimization' not in kwargs:
-        kwargs['advanced_optimization'] = True
+    # Set defaults for maximum optimization
+    # Advanced JIT compiler optimizations
+    kwargs.setdefault('advanced_optimization', True)
 
-    # fast_math should be OFF when ti.f64 is specified
-    if 'fast_math' not in kwargs:
+    # fast_math: Enable fast floating-point operations (may sacrifice IEEE-754 compliance)
+    # Should be OFF when ti.f64 is specified for high precision
+    kwargs.setdefault('fast_math', True)
+
+    # AOT cache: Cache compiled kernels to reduce JIT compilation time on subsequent runs
+    kwargs.setdefault('offline_cache', True)
+
+    # GPU memory: Allocate up to 90% of available GPU memory
+    kwargs.setdefault('device_memory_fraction', 0.9)
+
+    # Disable profiler: Remove profiling overhead for production
+    kwargs.setdefault('kernel_profiler', False)
+
+    # Disable debug mode: Remove debug checks for performance
+    kwargs.setdefault('debug', False)
+
+    # Apply extreme optimizations if requested
+    if extreme_optimization:
+        # Force fast_math even if user tries to disable it
+        # WARNING: This overrides user settings for maximum performance
         kwargs['fast_math'] = True
+        # Enable CFG optimization for control flow optimization
+        kwargs.setdefault('cfg_optimization', True)
 
     # Build init arguments
     init_kwargs = {'arch': arch, **kwargs}
