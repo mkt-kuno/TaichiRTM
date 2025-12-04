@@ -425,8 +425,8 @@ class BackwardModeling:
             0: Success
             4-6: Field became infinite
         """
-        isnaps_set = set(isnaps.tolist())
-        isnaps_list = list(isnaps)
+        # Create dictionary mapping timestep to snapshot index for O(1) lookup
+        isnaps_to_idx = {int(t): idx for idx, t in enumerate(isnaps)}
         
         for it in range(self.nt):
             # Apply boundary conditions
@@ -446,8 +446,8 @@ class BackwardModeling:
             self._record_synthetic_source_kernel(t)
             
             # Cross-correlation imaging at snapshot times - all on GPU
-            if t in isnaps_set:
-                snap_idx = isnaps_list.index(t)
+            if t in isnaps_to_idx:
+                snap_idx = isnaps_to_idx[t]
                 # Directly correlate using the 3D snapshot field - no CPU transfer needed
                 self._correlate_with_snapshot(import_fwdata_u, import_fwdata_v, import_fwdata_w, snap_idx)
                     
