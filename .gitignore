@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Taichi
+.taichi_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+/tmp/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Example outputs (regenerated on run)
+examples/results/data/
+examples/results/RTMimages/*.png
+!examples/results/RTMimages/120.png
+!examples/results/RTMimages/x_120.png
+!examples/results/RTMimages/y_120.png
+!examples/results/RTMimages/z_120.png
