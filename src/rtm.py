@@ -375,15 +375,74 @@ class ReverseTimeMigration:
         
     def _compute_isnap(self, total_memory: int, memory_margin: int, 
                        nx: int, nz: int, nt: int) -> int:
-        """Compute snapshot interval based on available memory."""
+        """
+        Compute snapshot interval based on available memory.
+        
+        This function calculates the optimal snapshot interval to maximize
+        memory usage while staying within the available memory budget.
+        A smaller isnap means more snapshots and better imaging quality
+        at the cost of more memory.
+        
+        Parameters
+        ----------
+        total_memory : int
+            Total available memory in MiB
+        memory_margin : int
+            Memory margin in MiB
+        nx : int
+            Grid size in x direction
+        nz : int
+            Grid size in z direction
+        nt : int
+            Number of time steps
+            
+        Returns
+        -------
+        int
+            Snapshot interval (minimum 1)
+        """
         dtype_size = 4  # float32 bytes
         num_components = 3  # u, v, w velocity components
-        allowed_memory = (total_memory - memory_margin) * 1024 * 1024
-        max_steps = allowed_memory // (nx * nz * dtype_size) // num_components
         
-        if max_steps == 0:
+        # Calculate memory per snapshot in bytes
+        bytes_per_snapshot = nx * nz * dtype_size * num_components
+        
+        # Available memory for snapshots (in bytes)
+        # Reserve memory for stress fields, velocity fields, and other data structures
+        # Each field is nx*nz*float32, we have about 20 fields total (stress, velocity, material, etc.)
+        num_fields = 20
+        field_memory = num_fields * nx * nz * dtype_size
+        
+        # Account for observed data and source wavelets
+        # observed: num_receivers * nt * 3 * 4 bytes
+        # source: num_sources * nt * 3 * 4 bytes  
+        # Estimate conservatively with 100 receivers and 3 sources
+        data_memory = (100 + 3) * nt * num_components * dtype_size
+        
+        # Base memory overhead (Taichi, Python, etc.) - roughly 500MB
+        base_overhead = 500 * 1024 * 1024
+        
+        allowed_memory = (total_memory - memory_margin) * 1024 * 1024 - field_memory - data_memory - base_overhead
+        
+        if allowed_memory <= 0:
+            print(f"Warning: Very limited memory available, using minimum snapshots")
+            return nt  # Minimum snapshots
+            
+        max_snapshots = allowed_memory // bytes_per_snapshot
+        
+        if max_snapshots <= 0:
             return nt
-        return max(1, int(np.ceil(nt / max_steps)))
+        if max_snapshots >= nt:
+            return 1  # Save every timestep
+            
+        isnap = max(1, int(np.ceil(nt / max_snapshots)))
+        
+        # Calculate actual memory usage for logging
+        actual_snapshots = nt // isnap
+        actual_memory_mb = (actual_snapshots * bytes_per_snapshot) / (1024 * 1024)
+        print(f"Snapshot settings: isnap={isnap}, num_snapshots={actual_snapshots}, snapshot_memory={actual_memory_mb:.0f} MiB")
+        
+        return isnap
         
     def run(self, 
             total_memory: Optional[int] = None,
