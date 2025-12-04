@@ -378,12 +378,21 @@ class BackwardModeling:
             self.result_u[i, j] += fw_u[i, j] * self.u[i, j]
             self.result_v[i, j] += fw_v[i, j] * self.v[i, j]
             self.result_w[i, j] += fw_w[i, j] * self.w[i, j]
-            
+
+    @ti.kernel
+    def _correlate_with_snapshot(self, fw_u: ti.template(), fw_v: ti.template(), fw_w: ti.template(), snap_idx: ti.i32):
+        """Compute cross-correlation with forward wavefield snapshot - fully parallelized on GPU."""
+        for i, j in self.result_u:
+            self.result_u[i, j] += fw_u[i, j, snap_idx] * self.u[i, j]
+            self.result_v[i, j] += fw_v[i, j, snap_idx] * self.v[i, j]
+            self.result_w[i, j] += fw_w[i, j, snap_idx] * self.w[i, j]
+
     def run_calc(self,
-                 import_fwdata_u: np.ndarray,
-                 import_fwdata_v: np.ndarray,
-                 import_fwdata_w: np.ndarray,
+                 import_fwdata_u,
+                 import_fwdata_v,
+                 import_fwdata_w,
                  isnaps: np.ndarray,
+                 num_snaps: int,
                  method: str = 'cross_correlation',
                  display_callback: Optional[Callable] = None,
                  stability_check_interval: int = 100) -> int:
@@ -392,14 +401,16 @@ class BackwardModeling:
         
         Parameters
         ----------
-        import_fwdata_u : np.ndarray
-            Forward wavefield u snapshots (nx, nz, num_snaps)
-        import_fwdata_v : np.ndarray
-            Forward wavefield v snapshots
-        import_fwdata_w : np.ndarray
-            Forward wavefield w snapshots
+        import_fwdata_u : ti.field
+            Forward wavefield u snapshots (nx, nz, num_snaps) as Taichi field
+        import_fwdata_v : ti.field
+            Forward wavefield v snapshots as Taichi field
+        import_fwdata_w : ti.field
+            Forward wavefield w snapshots as Taichi field
         isnaps : np.ndarray
             Timesteps of snapshots
+        num_snaps : int
+            Number of snapshots
         method : str
             Imaging condition: 'cross_correlation' or 'convolution'
         display_callback : callable, optional
@@ -414,11 +425,6 @@ class BackwardModeling:
             0: Success
             4-6: Field became infinite
         """
-        # Pre-allocate forward wavefield fields for correlation
-        fw_u_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        fw_v_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        fw_w_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        
         isnaps_set = set(isnaps.tolist())
         isnaps_list = list(isnaps)
         
@@ -439,15 +445,11 @@ class BackwardModeling:
             self._apply_absorbing()
             self._record_synthetic_source_kernel(t)
             
-            # Cross-correlation imaging at snapshot times
+            # Cross-correlation imaging at snapshot times - all on GPU
             if t in isnaps_set:
                 snap_idx = isnaps_list.index(t)
-                fw_u_field.from_numpy(import_fwdata_u[:, :, snap_idx])
-                fw_v_field.from_numpy(import_fwdata_v[:, :, snap_idx])
-                fw_w_field.from_numpy(import_fwdata_w[:, :, snap_idx])
-                
-                # Apply imaging condition
-                self._correlate(fw_u_field, fw_v_field, fw_w_field)
+                # Directly correlate using the 3D snapshot field - no CPU transfer needed
+                self._correlate_with_snapshot(import_fwdata_u, import_fwdata_v, import_fwdata_w, snap_idx)
                     
                 if display_callback is not None:
                     u_np = self.u.to_numpy()
