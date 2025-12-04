@@ -385,7 +385,8 @@ class BackwardModeling:
                  import_fwdata_w: np.ndarray,
                  isnaps: np.ndarray,
                  method: str = 'cross_correlation',
-                 display_callback: Optional[Callable] = None) -> int:
+                 display_callback: Optional[Callable] = None,
+                 stability_check_interval: int = 100) -> int:
         """
         Run backward modeling with correlation.
         
@@ -403,6 +404,9 @@ class BackwardModeling:
             Imaging condition: 'cross_correlation' or 'convolution'
         display_callback : callable, optional
             Callback for displaying wavefield
+        stability_check_interval : int
+            How often to check for numerical stability (default: every 100 steps).
+            Higher values improve GPU utilization but may miss instability earlier.
             
         Returns
         -------
@@ -451,10 +455,11 @@ class BackwardModeling:
                     w_np = self.w.to_numpy()
                     display_callback(u_np, v_np, w_np, t, self.nx, self.nz, self.dx, self.dz)
                     
-            # Check for numerical stability
-            flag = self._check_finite()
-            if flag != 0:
-                return flag
+            # Check for numerical stability less frequently to improve GPU utilization
+            if it % stability_check_interval == 0:
+                flag = self._check_finite()
+                if flag != 0:
+                    return flag
                 
         print('Backward modeling completed')
         return 0

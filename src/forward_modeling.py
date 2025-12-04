@@ -413,7 +413,8 @@ class ForwardModeling:
             
     def run(self, 
             save: bool = False,
-            display_callback: Optional[Callable] = None) -> int:
+            display_callback: Optional[Callable] = None,
+            stability_check_interval: int = 100) -> int:
         """
         Run forward modeling.
         
@@ -424,6 +425,9 @@ class ForwardModeling:
         display_callback : callable, optional
             Callback function for displaying wavefield.
             Signature: callback(u, v, w, it, nx, nz, dx, dz)
+        stability_check_interval : int
+            How often to check for numerical stability (default: every 100 steps).
+            Higher values improve GPU utilization but may miss instability earlier.
             
         Returns
         -------
@@ -462,11 +466,13 @@ class ForwardModeling:
                     w_np = self.w.to_numpy()
                     display_callback(u_np, v_np, w_np, it, self.nx, self.nz, self.dx, self.dz)
                     
-            # Check for numerical stability
-            flag = self._check_finite()
-            if flag != 0:
-                return flag
-                
+            # Check for numerical stability less frequently to improve GPU utilization
+            # Checking every step adds significant overhead due to GPU-CPU synchronization
+            if it % stability_check_interval == 0:
+                flag = self._check_finite()
+                if flag != 0:
+                    return flag
+                    
             # Save snapshots
             if save and it % self.isnap == 0 and it != 0:
                 snap_idx = it // self.isnap - 1
