@@ -196,7 +196,7 @@ def process_single_file(npz_path: str, output_dir: str,
         vstep=100,
         v_fix=velocity,
         absorbing_frame=absorbing_frame,
-        total_allocate_memory_gb=6
+        total_allocate_memory_gb=4
     )
     
     # Run RTM
