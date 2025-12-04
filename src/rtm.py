@@ -298,10 +298,10 @@ class ReverseTimeMigration:
         
         Memory allocation during RTM run:
         1. Input fields (shared): mu, lam, rho, src_loc, recv_loc, wavelets, surface_matrix
-        2. ForwardModeling: grid fields (17) + seismograms
+        2. ForwardModeling: grid fields (14) + seismograms
         3. Snapshot storage: u_save, v_save, w_save, isnaps (3*nx*nz*num_snaps + num_snaps)
         4. Observed data fields: obsdata_u, obsdata_v, obsdata_w
-        5. BackwardModeling: grid fields (20) + synthetic source
+        5. BackwardModeling: grid fields (17) + synthetic source
         
         During backward modeling, forward snapshots still exist in memory.
         
