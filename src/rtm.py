@@ -407,17 +407,54 @@ class ReverseTimeMigration:
             wavelet_v = self.source_v.reshape(1, -1) if self.source_v.ndim == 1 else self.source_v
             wavelet_w = self.source_w.reshape(1, -1) if self.source_w.ndim == 1 else self.source_w
             
+            # Prepare all data as Taichi fields for ForwardModeling
+            num_sources = len(src_loc_step)
+            num_receivers = len(receiver_loc_step)
+            
+            # Create material property fields
+            mu_np = rho * vs ** 2
+            lam_np = ((vp / vs) ** 2 - 2) * mu_np
+            
+            mu_field = ti.field(dtype=ti.f32, shape=(nx, nz))
+            lam_field = ti.field(dtype=ti.f32, shape=(nx, nz))
+            rho_field_input = ti.field(dtype=ti.f32, shape=(nx, nz))
+            mu_field.from_numpy(mu_np)
+            lam_field.from_numpy(lam_np)
+            rho_field_input.from_numpy(rho)
+            
+            # Create location fields
+            src_loc_field = ti.field(dtype=ti.i32, shape=(num_sources, 2))
+            recv_loc_field = ti.field(dtype=ti.i32, shape=(num_receivers, 2))
+            src_loc_field.from_numpy(np.array(src_loc_step, dtype=np.int32))
+            recv_loc_field.from_numpy(np.array(receiver_loc_step, dtype=np.int32))
+            
+            # Create wavelet fields
+            wavelet_u_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
+            wavelet_v_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
+            wavelet_w_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
+            wavelet_u_field.from_numpy(np.asarray(wavelet_u, dtype=np.float32))
+            wavelet_v_field.from_numpy(np.asarray(wavelet_v, dtype=np.float32))
+            wavelet_w_field.from_numpy(np.asarray(wavelet_w, dtype=np.float32))
+            
+            # Create surface matrix field (optional)
+            surface_matrix_field = None
+            if surface_matrix is not None:
+                surface_matrix_field = ti.field(dtype=ti.f32, shape=(nx, nz))
+                surface_matrix_field.from_numpy(np.asarray(surface_matrix, dtype=np.float32))
+            
             fw = ForwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
-                vs=vs, vp=vp, rho=rho,
+                mu_field=mu_field, lam_field=lam_field, rho_field=rho_field_input,
                 absorbing_frame=absorbing_frame,
-                src_loc=src_loc_step,
-                wavelet_u=wavelet_u,
-                wavelet_v=wavelet_v,
-                wavelet_w=wavelet_w,
-                receiver_loc=receiver_loc_step,
+                src_loc_field=src_loc_field,
+                wavelet_u_field=wavelet_u_field,
+                wavelet_v_field=wavelet_v_field,
+                wavelet_w_field=wavelet_w_field,
+                recv_loc_field=recv_loc_field,
                 isnap=isnap,
-                surface_matrix=surface_matrix
+                surface_matrix_field=surface_matrix_field,
+                num_sources=num_sources,
+                num_receivers=num_receivers
             )
             
             flag = fw.run(save=True, display_callback=display_callback)
@@ -428,24 +465,33 @@ class ReverseTimeMigration:
                 
             print('Forward modeling completed successfully.')
             
+            # Create observed data fields for BackwardModeling
+            obsdata_u_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
+            obsdata_v_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
+            obsdata_w_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
+            obsdata_u_field.from_numpy(self.observed_u)
+            obsdata_v_field.from_numpy(self.observed_v)
+            obsdata_w_field.from_numpy(self.observed_w)
+            
             bw = BackwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
-                vs=vs, vp=vp, rho=rho,
+                mu_field=mu_field, lam_field=lam_field, rho_field=rho_field_input,
                 absorbing_frame=absorbing_frame,
-                src_loc=src_loc_step,
-                observed_data_u=self.observed_u,
-                observed_data_v=self.observed_v,
-                observed_data_w=self.observed_w,
-                receiver_loc=receiver_loc_step,
-                isnap=fw.isnaps,
-                surface_matrix=surface_matrix
+                src_loc_field=src_loc_field,
+                obsdata_u_field=obsdata_u_field,
+                obsdata_v_field=obsdata_v_field,
+                obsdata_w_field=obsdata_w_field,
+                recv_loc_field=recv_loc_field,
+                surface_matrix_field=surface_matrix_field,
+                num_sources=num_sources,
+                num_receivers=num_receivers
             )
             
             flag = bw.run_calc(
                 import_fwdata_u=fw.u_save_field,
                 import_fwdata_v=fw.v_save_field,
                 import_fwdata_w=fw.w_save_field,
-                isnaps=fw.isnaps,
+                isnaps_field=fw.isnaps_field,
                 num_snaps=fw.num_snaps,
                 method=method,
                 display_callback=display_callback
@@ -457,7 +503,7 @@ class ReverseTimeMigration:
                 
             print('Backward modeling completed successfully.')
             
-        print(f'\nSimulation completed.')
+        print('\nSimulation completed.')
         print(f'Estimated velocity: {estimated_v} m/s')
         print(f'CFL: {CFL}')
         print(f'Grid: nx={nx}, nz={nz}, dx={dx:.4f}')
