@@ -18,10 +18,12 @@
 Forward modeling for seismic wave propagation using Taichi.
 Implements P-SV and SH wave propagation using finite difference method.
 Optimized for parallel execution on CPU/GPU with JIT compilation.
+
+NOTE: This module uses only Taichi arrays internally. All numpy operations
+are handled in rtm.py before passing data to this module.
 """
 
 import taichi as ti
-import numpy as np
 from typing import Optional, Callable
 
 
@@ -29,6 +31,8 @@ from typing import Optional, Callable
 class ForwardModeling:
     """
     Forward modeling for seismic wave propagation.
+    
+    All input data must be provided as Taichi fields.
     
     Parameters
     ----------
@@ -44,28 +48,32 @@ class ForwardModeling:
         Number of time steps
     fs : float
         Sampling frequency
-    vs : np.ndarray
-        S-wave velocity model (nx, nz)
-    vp : np.ndarray
-        P-wave velocity model (nx, nz)
-    rho : np.ndarray
-        Density model (nx, nz)
+    mu_field : ti.field
+        Shear modulus field (nx, nz)
+    lam_field : ti.field
+        Lame's first parameter field (nx, nz)
+    rho_field : ti.field
+        Density field (nx, nz)
     absorbing_frame : int
         Width of absorbing boundary
-    src_loc : list
-        Source locations [[i1, j1], [i2, j2], ...]
-    wavelet_u : np.ndarray
-        Source wavelet for u component
-    wavelet_v : np.ndarray
-        Source wavelet for v component
-    wavelet_w : np.ndarray
-        Source wavelet for w component
-    receiver_loc : list
-        Receiver locations [[i1, j1], [i2, j2], ...]
+    src_loc_field : ti.field
+        Source locations as Taichi field (num_sources, 2)
+    wavelet_u_field : ti.field
+        Source wavelet for u component (num_sources, nt)
+    wavelet_v_field : ti.field
+        Source wavelet for v component (num_sources, nt)
+    wavelet_w_field : ti.field
+        Source wavelet for w component (num_sources, nt)
+    recv_loc_field : ti.field
+        Receiver locations as Taichi field (num_receivers, 2)
     isnap : int
         Snapshot interval
-    surface_matrix : np.ndarray, optional
-        Surface boundary matrix
+    surface_matrix_field : ti.field, optional
+        Surface boundary matrix field (nx, nz)
+    num_sources : int
+        Number of sources
+    num_receivers : int
+        Number of receivers
     """
 
     def __init__(self, **kwargs):
@@ -76,22 +84,26 @@ class ForwardModeling:
         self.nt = kwargs['nt']
         self.fs = float(kwargs['fs'])
         self.absorbing_frame = kwargs.get('absorbing_frame', 60)
-        self.src_loc = kwargs.get('src_loc', [[self.nx // 2, 0]])
-        self.receiver_loc = kwargs['receiver_loc']
         self.isnap = kwargs.get('isnap', 10)
-        self.f0 = kwargs.get('f0', None)
-        self.surface_matrix_np = kwargs.get('surface_matrix', None)
         self.dt = 1.0 / self.fs
         
-        # Store locations as Taichi fields for parallel access
-        self.num_sources = len(self.src_loc)
-        self.num_receivers = len(self.receiver_loc)
+        # Store locations count
+        self.num_sources = kwargs['num_sources']
+        self.num_receivers = kwargs['num_receivers']
+        
+        # Store input Taichi fields
+        self.src_loc_field = kwargs['src_loc_field']
+        self.recv_loc_field = kwargs['recv_loc_field']
+        self.wavelet_u_field = kwargs['wavelet_u_field']
+        self.wavelet_v_field = kwargs['wavelet_v_field']
+        self.wavelet_w_field = kwargs['wavelet_w_field']
+        
+        # Surface matrix (optional)
+        self.surface_matrix = kwargs.get('surface_matrix_field', None)
         
         self._init_fields()
-        self._init_material(kwargs)
-        self._init_wavelets(kwargs)
+        self._init_material_from_fields(kwargs)
         self._init_absorbing()
-        self._init_locations()
         
     def _init_fields(self):
         """Initialize Taichi fields for wave propagation."""
@@ -121,100 +133,31 @@ class ForwardModeling:
         
         # Absorbing boundary coefficients
         self.absorb_coeff = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        
-        # Surface matrix (optional)
-        if self.surface_matrix_np is not None:
-            self.surface_matrix = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        else:
-            self.surface_matrix = None
             
         # Seismograms - recorded at receivers
         self.seismogram_u = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
         self.seismogram_v = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
         self.seismogram_w = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
         
-    def _init_locations(self):
-        """Initialize source and receiver location fields for parallel access."""
-        # Source locations as Taichi field
-        self.src_loc_field = ti.field(dtype=ti.i32, shape=(self.num_sources, 2))
-        src_loc_np = np.array(self.src_loc, dtype=np.int32)
-        self.src_loc_field.from_numpy(src_loc_np)
+    def _init_material_from_fields(self, kwargs):
+        """Initialize material properties from input Taichi fields."""
+        # Copy from input fields
+        mu_input = kwargs['mu_field']
+        lam_input = kwargs['lam_field']
+        rho_input = kwargs['rho_field']
         
-        # Receiver locations as Taichi field
-        self.recv_loc_field = ti.field(dtype=ti.i32, shape=(self.num_receivers, 2))
-        recv_loc_np = np.array(self.receiver_loc, dtype=np.int32)
-        self.recv_loc_field.from_numpy(recv_loc_np)
-        
-    def _init_material(self, kwargs):
-        """Initialize material properties."""
-        vs_np = kwargs.get('vs', np.ones((self.nx, self.nz), dtype=np.float32) * 200)
-        vp_np = kwargs.get('vp', vs_np * np.sqrt(6))
-        rho_np = kwargs.get('rho', np.ones((self.nx, self.nz), dtype=np.float32) * 1800)
-        
-        if isinstance(vs_np, (int, float)):
-            vs_np = np.ones((self.nx, self.nz), dtype=np.float32) * vs_np
-        if isinstance(vp_np, (int, float)):
-            vp_np = np.ones((self.nx, self.nz), dtype=np.float32) * vp_np
-        if isinstance(rho_np, (int, float)):
-            rho_np = np.ones((self.nx, self.nz), dtype=np.float32) * rho_np
-            
-        vs_np = np.asarray(vs_np, dtype=np.float32)
-        vp_np = np.asarray(vp_np, dtype=np.float32)
-        rho_np = np.asarray(rho_np, dtype=np.float32)
-        
-        mu_np = rho_np * vs_np ** 2
-        lam_np = ((vp_np / vs_np) ** 2 - 2) * mu_np
-        
-        self.mu.from_numpy(mu_np)
-        self.lam.from_numpy(lam_np)
-        self.rho_field.from_numpy(rho_np)
+        self._copy_field(mu_input, self.mu)
+        self._copy_field(lam_input, self.lam)
+        self._copy_field(rho_input, self.rho_field)
         
         self._compute_shear_avg()
         self._compute_rho_avg()
         
-        if self.surface_matrix_np is not None:
-            self.surface_matrix.from_numpy(np.asarray(self.surface_matrix_np, dtype=np.float32))
-            
-    def _init_wavelets(self, kwargs):
-        """Initialize source wavelets."""
-        wavelet_u = kwargs.get('wavelet_u', None)
-        wavelet_v = kwargs.get('wavelet_v', None)
-        wavelet_w = kwargs.get('wavelet_w', None)
-        
-        def prepare_wavelet(wavelet, name):
-            if wavelet is None:
-                if self.f0 is None:
-                    raise ValueError(f'Either {name} or f0 must be provided')
-                return self._gaussian_src(self.f0, self.num_sources)
-            wavelet = np.asarray(wavelet, dtype=np.float32)
-            if wavelet.ndim == 1:
-                wavelet = wavelet.reshape(1, -1)
-            if wavelet.shape[1] != self.nt:
-                if wavelet.shape[1] > self.nt:
-                    wavelet = wavelet[:, :self.nt]
-                else:
-                    wavelet = np.pad(wavelet, ((0, 0), (0, self.nt - wavelet.shape[1])))
-            return wavelet
-            
-        self.wavelet_u_np = prepare_wavelet(wavelet_u, 'wavelet_u')
-        self.wavelet_v_np = prepare_wavelet(wavelet_v, 'wavelet_v')
-        self.wavelet_w_np = prepare_wavelet(wavelet_w, 'wavelet_w')
-        
-        # Store wavelets as Taichi fields for parallel source injection
-        self.wavelet_u_field = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
-        self.wavelet_v_field = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
-        self.wavelet_w_field = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
-        
-        self.wavelet_u_field.from_numpy(self.wavelet_u_np)
-        self.wavelet_v_field.from_numpy(self.wavelet_v_np)
-        self.wavelet_w_field.from_numpy(self.wavelet_w_np)
-        
-    def _gaussian_src(self, f0: float, num_sources: int) -> np.ndarray:
-        """Generate Gaussian source wavelet."""
-        time = np.linspace(0, self.nt * self.dt, self.nt, dtype=np.float32)
-        t0 = 3.0 / f0
-        src = -2.0 * (time - t0) * (f0 ** 2) * np.exp(-(f0 ** 2) * (time - t0) ** 2)
-        return np.tile(src, (num_sources, 1))
+    @ti.kernel
+    def _copy_field(self, src: ti.template(), dst: ti.template()):
+        """Copy one Taichi field to another."""
+        for i, j in dst:
+            dst[i, j] = src[i, j]
         
     @ti.kernel
     def _init_absorbing_kernel(self, FW: ti.i32, a: ti.f32):
@@ -411,6 +354,19 @@ class ForwardModeling:
                 result = 3
         return result
             
+    @ti.kernel
+    def _save_snapshot_kernel(self, snap_idx: ti.i32):
+        """Save current wavefield to snapshot storage - parallelized on GPU."""
+        for i, j in ti.ndrange(self.nx, self.nz):
+            self.u_save_field[i, j, snap_idx] = self.u[i, j]
+            self.v_save_field[i, j, snap_idx] = self.v[i, j]
+            self.w_save_field[i, j, snap_idx] = self.w[i, j]
+
+    @ti.kernel
+    def _set_isnap_value(self, idx: ti.i32, val: ti.i32):
+        """Set a single isnap value."""
+        self.isnaps_field[idx] = val
+
     def run(self, 
             save: bool = False,
             display_callback: Optional[Callable] = None,
@@ -439,10 +395,12 @@ class ForwardModeling:
         """
         if save:
             num_snaps = self.nt // self.isnap
-            self.u_save = np.zeros((self.nx, self.nz, num_snaps), dtype=np.float32)
-            self.v_save = np.zeros((self.nx, self.nz, num_snaps), dtype=np.float32)
-            self.w_save = np.zeros((self.nx, self.nz, num_snaps), dtype=np.float32)
-            self.isnaps = np.zeros(num_snaps, dtype=np.int32)
+            # Store snapshots in Taichi fields (GPU memory) instead of NumPy arrays
+            self.u_save_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz, num_snaps))
+            self.v_save_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz, num_snaps))
+            self.w_save_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz, num_snaps))
+            self.isnaps_field = ti.field(dtype=ti.i32, shape=(num_snaps,))
+            self.num_snaps = num_snaps
             
         for it in range(self.nt):
             # Apply boundary conditions
@@ -473,19 +431,17 @@ class ForwardModeling:
                 if flag != 0:
                     return flag
                     
-            # Save snapshots
+            # Save snapshots to Taichi fields (GPU memory)
             if save and it % self.isnap == 0 and it != 0:
                 snap_idx = it // self.isnap - 1
-                self.u_save[:, :, snap_idx] = self.u.to_numpy()
-                self.v_save[:, :, snap_idx] = self.v.to_numpy()
-                self.w_save[:, :, snap_idx] = self.w.to_numpy()
-                self.isnaps[snap_idx] = it
+                self._save_snapshot_kernel(snap_idx)
+                self._set_isnap_value(snap_idx, it)
                 
         print('Forward modeling completed')
         return 0
         
     def get_seismogram(self) -> tuple:
-        """Get recorded seismograms as numpy arrays."""
+        """Get recorded seismograms as numpy arrays (for external interface)."""
         return (
             self.seismogram_u.to_numpy(),
             self.seismogram_v.to_numpy(),

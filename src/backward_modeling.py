@@ -18,10 +18,12 @@
 Backward modeling for seismic wave propagation using Taichi.
 Implements time-reversed wave propagation for RTM.
 Optimized for parallel execution on CPU/GPU with JIT compilation.
+
+NOTE: This module uses only Taichi arrays internally. All numpy operations
+are handled in rtm.py before passing data to this module.
 """
 
 import taichi as ti
-import numpy as np
 from typing import Optional, Callable
 
 
@@ -29,6 +31,8 @@ from typing import Optional, Callable
 class BackwardModeling:
     """
     Backward modeling for reverse time migration.
+    
+    All input data must be provided as Taichi fields.
     
     Parameters
     ----------
@@ -44,28 +48,30 @@ class BackwardModeling:
         Number of time steps
     fs : float
         Sampling frequency
-    vs : np.ndarray
-        S-wave velocity model
-    vp : np.ndarray
-        P-wave velocity model
-    rho : np.ndarray
-        Density model
+    mu_field : ti.field
+        Shear modulus field (nx, nz)
+    lam_field : ti.field
+        Lame's first parameter field (nx, nz)
+    rho_field : ti.field
+        Density field (nx, nz)
     absorbing_frame : int
         Width of absorbing boundary
-    src_loc : list
-        Source locations
-    observed_data_u : np.ndarray
-        Observed data for u component
-    observed_data_v : np.ndarray
-        Observed data for v component
-    observed_data_w : np.ndarray
-        Observed data for w component
-    receiver_loc : list
-        Receiver locations
-    isnap : int or np.ndarray
-        Snapshot interval or specific timesteps
-    surface_matrix : np.ndarray, optional
-        Surface boundary matrix
+    src_loc_field : ti.field
+        Source locations as Taichi field (num_sources, 2)
+    obsdata_u_field : ti.field
+        Observed data for u component (num_receivers, nt)
+    obsdata_v_field : ti.field
+        Observed data for v component (num_receivers, nt)
+    obsdata_w_field : ti.field
+        Observed data for w component (num_receivers, nt)
+    recv_loc_field : ti.field
+        Receiver locations as Taichi field (num_receivers, 2)
+    surface_matrix_field : ti.field, optional
+        Surface boundary matrix field (nx, nz)
+    num_sources : int
+        Number of sources
+    num_receivers : int
+        Number of receivers
     """
 
     def __init__(self, **kwargs):
@@ -76,25 +82,25 @@ class BackwardModeling:
         self.nt = kwargs['nt']
         self.fs = float(kwargs['fs'])
         self.absorbing_frame = kwargs.get('absorbing_frame', 60)
-        self.src_loc = kwargs.get('src_loc', [[self.nx // 2, 0]])
-        self.receiver_loc = kwargs['receiver_loc']
-        self.isnap = kwargs.get('isnap', 10)
-        self.surface_matrix_np = kwargs.get('surface_matrix', None)
         self.dt = 1.0 / self.fs
         
         # Store locations count
-        self.num_sources = len(self.src_loc)
-        self.num_receivers = len(self.receiver_loc)
+        self.num_sources = kwargs['num_sources']
+        self.num_receivers = kwargs['num_receivers']
         
-        self.obsdata_u_np = np.asarray(kwargs['observed_data_u'], dtype=np.float32)
-        self.obsdata_v_np = np.asarray(kwargs['observed_data_v'], dtype=np.float32)
-        self.obsdata_w_np = np.asarray(kwargs['observed_data_w'], dtype=np.float32)
+        # Store input Taichi fields
+        self.src_loc_field = kwargs['src_loc_field']
+        self.recv_loc_field = kwargs['recv_loc_field']
+        self.obsdata_u_field = kwargs['obsdata_u_field']
+        self.obsdata_v_field = kwargs['obsdata_v_field']
+        self.obsdata_w_field = kwargs['obsdata_w_field']
+        
+        # Surface matrix (optional)
+        self.surface_matrix = kwargs.get('surface_matrix_field', None)
         
         self._init_fields()
-        self._init_material(kwargs)
+        self._init_material_from_fields(kwargs)
         self._init_absorbing()
-        self._init_locations()
-        self._init_observed_data()
         
     def _init_fields(self):
         """Initialize Taichi fields."""
@@ -124,12 +130,6 @@ class BackwardModeling:
         
         # Absorbing boundary
         self.absorb_coeff = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        
-        # Surface matrix (optional)
-        if self.surface_matrix_np is not None:
-            self.surface_matrix = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        else:
-            self.surface_matrix = None
             
         # Synthetic source at source locations
         self.synsrc_u = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
@@ -141,57 +141,25 @@ class BackwardModeling:
         self.result_v = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.result_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         
-    def _init_locations(self):
-        """Initialize source and receiver location fields for parallel access."""
-        # Source locations as Taichi field
-        self.src_loc_field = ti.field(dtype=ti.i32, shape=(self.num_sources, 2))
-        src_loc_np = np.array(self.src_loc, dtype=np.int32)
-        self.src_loc_field.from_numpy(src_loc_np)
+    def _init_material_from_fields(self, kwargs):
+        """Initialize material properties from input Taichi fields."""
+        # Copy from input fields
+        mu_input = kwargs['mu_field']
+        lam_input = kwargs['lam_field']
+        rho_input = kwargs['rho_field']
         
-        # Receiver locations as Taichi field
-        self.recv_loc_field = ti.field(dtype=ti.i32, shape=(self.num_receivers, 2))
-        recv_loc_np = np.array(self.receiver_loc, dtype=np.int32)
-        self.recv_loc_field.from_numpy(recv_loc_np)
-        
-    def _init_observed_data(self):
-        """Initialize observed data as Taichi fields for parallel access."""
-        self.obsdata_u_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
-        self.obsdata_v_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
-        self.obsdata_w_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
-        
-        self.obsdata_u_field.from_numpy(self.obsdata_u_np)
-        self.obsdata_v_field.from_numpy(self.obsdata_v_np)
-        self.obsdata_w_field.from_numpy(self.obsdata_w_np)
-        
-    def _init_material(self, kwargs):
-        """Initialize material properties."""
-        vs_np = kwargs.get('vs', np.ones((self.nx, self.nz), dtype=np.float32) * 200)
-        vp_np = kwargs.get('vp', vs_np * np.sqrt(6))
-        rho_np = kwargs.get('rho', np.ones((self.nx, self.nz), dtype=np.float32) * 1800)
-        
-        if isinstance(vs_np, (int, float)):
-            vs_np = np.ones((self.nx, self.nz), dtype=np.float32) * vs_np
-        if isinstance(vp_np, (int, float)):
-            vp_np = np.ones((self.nx, self.nz), dtype=np.float32) * vp_np
-        if isinstance(rho_np, (int, float)):
-            rho_np = np.ones((self.nx, self.nz), dtype=np.float32) * rho_np
-            
-        vs_np = np.asarray(vs_np, dtype=np.float32)
-        vp_np = np.asarray(vp_np, dtype=np.float32)
-        rho_np = np.asarray(rho_np, dtype=np.float32)
-        
-        mu_np = rho_np * vs_np ** 2
-        lam_np = ((vp_np / vs_np) ** 2 - 2) * mu_np
-        
-        self.mu.from_numpy(mu_np)
-        self.lam.from_numpy(lam_np)
-        self.rho_field.from_numpy(rho_np)
+        self._copy_field(mu_input, self.mu)
+        self._copy_field(lam_input, self.lam)
+        self._copy_field(rho_input, self.rho_field)
         
         self._compute_shear_avg()
         self._compute_rho_avg()
         
-        if self.surface_matrix_np is not None:
-            self.surface_matrix.from_numpy(np.asarray(self.surface_matrix_np, dtype=np.float32))
+    @ti.kernel
+    def _copy_field(self, src: ti.template(), dst: ti.template()):
+        """Copy one Taichi field to another."""
+        for i, j in dst:
+            dst[i, j] = src[i, j]
             
     @ti.kernel
     def _init_absorbing_kernel(self, FW: ti.i32, a: ti.f32):
@@ -378,12 +346,30 @@ class BackwardModeling:
             self.result_u[i, j] += fw_u[i, j] * self.u[i, j]
             self.result_v[i, j] += fw_v[i, j] * self.v[i, j]
             self.result_w[i, j] += fw_w[i, j] * self.w[i, j]
-            
+
+    @ti.kernel
+    def _correlate_with_snapshot(self, fw_u: ti.template(), fw_v: ti.template(), fw_w: ti.template(), snap_idx: ti.i32):
+        """Compute cross-correlation with forward wavefield snapshot - fully parallelized on GPU."""
+        for i, j in self.result_u:
+            self.result_u[i, j] += fw_u[i, j, snap_idx] * self.u[i, j]
+            self.result_v[i, j] += fw_v[i, j, snap_idx] * self.v[i, j]
+            self.result_w[i, j] += fw_w[i, j, snap_idx] * self.w[i, j]
+
+    @ti.kernel
+    def _check_isnap_match(self, isnaps_field: ti.template(), idx: ti.i32, t: ti.i32) -> ti.i32:
+        """Check if snapshot at idx matches timestep t. Returns 1 if match, 0 otherwise."""
+        result = 0
+        if isnaps_field[idx] == t:
+            result = 1
+        return result
+
     def run_calc(self,
-                 import_fwdata_u: np.ndarray,
-                 import_fwdata_v: np.ndarray,
-                 import_fwdata_w: np.ndarray,
-                 isnaps: np.ndarray,
+                 import_fwdata_u,
+                 import_fwdata_v,
+                 import_fwdata_w,
+                 isnaps_field,
+                 num_snaps: int,
+                 isnap_interval: int,
                  method: str = 'cross_correlation',
                  display_callback: Optional[Callable] = None,
                  stability_check_interval: int = 100) -> int:
@@ -392,14 +378,18 @@ class BackwardModeling:
         
         Parameters
         ----------
-        import_fwdata_u : np.ndarray
-            Forward wavefield u snapshots (nx, nz, num_snaps)
-        import_fwdata_v : np.ndarray
-            Forward wavefield v snapshots
-        import_fwdata_w : np.ndarray
-            Forward wavefield w snapshots
-        isnaps : np.ndarray
-            Timesteps of snapshots
+        import_fwdata_u : ti.field
+            Forward wavefield u snapshots (nx, nz, num_snaps) as Taichi field
+        import_fwdata_v : ti.field
+            Forward wavefield v snapshots as Taichi field
+        import_fwdata_w : ti.field
+            Forward wavefield w snapshots as Taichi field
+        isnaps_field : ti.field
+            Timesteps of snapshots as Taichi field (num_snaps,)
+        num_snaps : int
+            Number of snapshots
+        isnap_interval : int
+            Snapshot interval (for O(1) index computation)
         method : str
             Imaging condition: 'cross_correlation' or 'convolution'
         display_callback : callable, optional
@@ -414,14 +404,6 @@ class BackwardModeling:
             0: Success
             4-6: Field became infinite
         """
-        # Pre-allocate forward wavefield fields for correlation
-        fw_u_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        fw_v_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        fw_w_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        
-        isnaps_set = set(isnaps.tolist())
-        isnaps_list = list(isnaps)
-        
         for it in range(self.nt):
             # Apply boundary conditions
             if self.surface_matrix is not None:
@@ -439,21 +421,21 @@ class BackwardModeling:
             self._apply_absorbing()
             self._record_synthetic_source_kernel(t)
             
-            # Cross-correlation imaging at snapshot times
-            if t in isnaps_set:
-                snap_idx = isnaps_list.index(t)
-                fw_u_field.from_numpy(import_fwdata_u[:, :, snap_idx])
-                fw_v_field.from_numpy(import_fwdata_v[:, :, snap_idx])
-                fw_w_field.from_numpy(import_fwdata_w[:, :, snap_idx])
-                
-                # Apply imaging condition
-                self._correlate(fw_u_field, fw_v_field, fw_w_field)
-                    
-                if display_callback is not None:
-                    u_np = self.u.to_numpy()
-                    v_np = self.v.to_numpy()
-                    w_np = self.w.to_numpy()
-                    display_callback(u_np, v_np, w_np, t, self.nx, self.nz, self.dx, self.dz)
+            # Cross-correlation imaging at snapshot times - O(1) lookup
+            # Compute expected snapshot index based on known interval pattern
+            if t > 0 and t % isnap_interval == 0:
+                snap_idx = t // isnap_interval - 1
+                if 0 <= snap_idx < num_snaps:
+                    # Verify this is a valid snapshot (sanity check)
+                    if self._check_isnap_match(isnaps_field, snap_idx, t) == 1:
+                        # Directly correlate using the 3D snapshot field - no CPU transfer needed
+                        self._correlate_with_snapshot(import_fwdata_u, import_fwdata_v, import_fwdata_w, snap_idx)
+                        
+                        if display_callback is not None:
+                            u_np = self.u.to_numpy()
+                            v_np = self.v.to_numpy()
+                            w_np = self.w.to_numpy()
+                            display_callback(u_np, v_np, w_np, t, self.nx, self.nz, self.dx, self.dz)
                     
             # Check for numerical stability less frequently to improve GPU utilization
             if it % stability_check_interval == 0:
