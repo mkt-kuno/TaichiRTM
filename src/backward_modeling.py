@@ -17,6 +17,7 @@
 """
 Backward modeling for seismic wave propagation using Taichi.
 Implements time-reversed wave propagation for RTM.
+Optimized for parallel execution on CPU/GPU with JIT compilation.
 """
 
 import taichi as ti
@@ -79,6 +80,11 @@ class BackwardModeling:
         self.receiver_loc = kwargs['receiver_loc']
         self.isnap = kwargs.get('isnap', 10)
         self.surface_matrix_np = kwargs.get('surface_matrix', None)
+        self.dt = 1.0 / self.fs
+        
+        # Store locations count
+        self.num_sources = len(self.src_loc)
+        self.num_receivers = len(self.receiver_loc)
         
         self.obsdata_u_np = np.asarray(kwargs['observed_data_u'], dtype=np.float32)
         self.obsdata_v_np = np.asarray(kwargs['observed_data_v'], dtype=np.float32)
@@ -87,44 +93,75 @@ class BackwardModeling:
         self._init_fields()
         self._init_material(kwargs)
         self._init_absorbing()
+        self._init_locations()
+        self._init_observed_data()
         
     def _init_fields(self):
         """Initialize Taichi fields."""
+        # Stress fields
         self.sxx = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.sxz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.szz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.syx = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.syz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         
+        # Velocity fields
         self.u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.v = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         
+        # Material property fields
         self.mu = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.lam = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.mxz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.myx = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.myz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         
+        # Density fields
         self.rho_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.rho_u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.rho_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         
+        # Absorbing boundary
         self.absorb_coeff = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         
+        # Surface matrix (optional)
         if self.surface_matrix_np is not None:
             self.surface_matrix = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         else:
             self.surface_matrix = None
             
-        num_sources = len(self.src_loc)
-        self.synsrc_u = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
-        self.synsrc_v = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
-        self.synsrc_w = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
+        # Synthetic source at source locations
+        self.synsrc_u = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
+        self.synsrc_v = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
+        self.synsrc_w = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
         
+        # RTM result images
         self.result_u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.result_v = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.result_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        
+    def _init_locations(self):
+        """Initialize source and receiver location fields for parallel access."""
+        # Source locations as Taichi field
+        self.src_loc_field = ti.field(dtype=ti.i32, shape=(self.num_sources, 2))
+        src_loc_np = np.array(self.src_loc, dtype=np.int32)
+        self.src_loc_field.from_numpy(src_loc_np)
+        
+        # Receiver locations as Taichi field
+        self.recv_loc_field = ti.field(dtype=ti.i32, shape=(self.num_receivers, 2))
+        recv_loc_np = np.array(self.receiver_loc, dtype=np.int32)
+        self.recv_loc_field.from_numpy(recv_loc_np)
+        
+    def _init_observed_data(self):
+        """Initialize observed data as Taichi fields for parallel access."""
+        self.obsdata_u_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
+        self.obsdata_v_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
+        self.obsdata_w_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
+        
+        self.obsdata_u_field.from_numpy(self.obsdata_u_np)
+        self.obsdata_v_field.from_numpy(self.obsdata_v_np)
+        self.obsdata_w_field.from_numpy(self.obsdata_w_np)
         
     def _init_material(self, kwargs):
         """Initialize material properties."""
@@ -150,128 +187,133 @@ class BackwardModeling:
         self.lam.from_numpy(lam_np)
         self.rho_field.from_numpy(rho_np)
         
-        self.dt = 1.0 / self.fs
-        
         self._compute_shear_avg()
         self._compute_rho_avg()
         
         if self.surface_matrix_np is not None:
             self.surface_matrix.from_numpy(np.asarray(self.surface_matrix_np, dtype=np.float32))
             
+    @ti.kernel
+    def _init_absorbing_kernel(self, FW: ti.i32, a: ti.f32):
+        """Initialize absorbing boundary coefficients using Taichi kernel."""
+        for i, j in self.absorb_coeff:
+            self.absorb_coeff[i, j] = 1.0
+            
+        # Left boundary
+        for i, j in ti.ndrange(FW, self.nz):
+            if j < self.nz - i - 1:
+                coeff = ti.exp(-(a ** 2 * (FW - i) ** 2))
+                self.absorb_coeff[i, j] = coeff
+                
+        # Right boundary
+        for i, j in ti.ndrange(FW, self.nz):
+            ii = self.nx - i - 1
+            if j < self.nz - i - 1:
+                coeff = ti.exp(-(a ** 2 * (FW - i) ** 2))
+                self.absorb_coeff[ii, j] = coeff
+                
+        # Bottom boundary
+        for i, j in ti.ndrange(self.nx, FW):
+            jj = self.nz - j - 1
+            if i >= j and i < self.nx - j:
+                coeff = ti.exp(-(a ** 2 * (FW - j) ** 2))
+                self.absorb_coeff[i, jj] = coeff
+            
     def _init_absorbing(self):
         """Initialize absorbing boundary coefficients."""
         FW = self.absorbing_frame
         a = 0.0053
-        nx, nz = self.nx, self.nz
-        
-        coeff = np.zeros(FW, dtype=np.float32)
-        for i in range(FW):
-            coeff[i] = np.exp(-(a ** 2 * (FW - i) ** 2))
-            
-        absorb_np = np.ones((nx, nz), dtype=np.float32)
-        
-        for i in range(FW):
-            ze = nz - i - 1
-            for j in range(ze):
-                absorb_np[i, j] = coeff[i]
-                
-        for i in range(FW):
-            ii = nx - i - 1
-            ze = nz - i - 1
-            for j in range(ze):
-                absorb_np[ii, j] = coeff[i]
-                
-        for j in range(FW):
-            jj = nz - j - 1
-            xb = j
-            xe = nx - j
-            for i in range(xb, xe):
-                absorb_np[i, jj] = coeff[j]
-                
-        self.absorb_coeff.from_numpy(absorb_np)
+        self._init_absorbing_kernel(FW, a)
         
     @ti.kernel
     def _compute_shear_avg(self):
-        """Compute averaged shear modulus."""
+        """Compute averaged shear modulus - parallelized."""
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
             mu_ij = self.mu[i, j]
             mu_ip1_j = self.mu[i + 1, j]
             mu_i_jp1 = self.mu[i, j + 1]
             mu_ip1_jp1 = self.mu[i + 1, j + 1]
             
+            # Harmonic averaging for shear modulus
             self.myx[i, j] = 2.0 / (1.0 / mu_ij + 1.0 / mu_ip1_j)
             self.myz[i, j] = 2.0 / (1.0 / mu_ij + 1.0 / mu_i_jp1)
             self.mxz[i, j] = 4.0 / (1.0 / mu_ij + 1.0 / mu_ip1_j + 1.0 / mu_i_jp1 + 1.0 / mu_ip1_jp1)
             
     @ti.kernel
     def _compute_rho_avg(self):
-        """Compute averaged density."""
+        """Compute averaged density - parallelized."""
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
             rho_ij = self.rho_field[i, j]
             rho_ip1_j = self.rho_field[i + 1, j]
             rho_i_jp1 = self.rho_field[i, j + 1]
             
+            # Arithmetic averaging for density
             self.rho_u[i, j] = 0.5 * (rho_ij + rho_ip1_j)
             self.rho_w[i, j] = 0.5 * (rho_ij + rho_i_jp1)
             
     @ti.kernel
     def _update_velocity_backward(self):
-        """Update velocity field for backward propagation."""
+        """Update velocity field for backward propagation - fully parallelized."""
         dt = ti.static(self.dt)
-        dx = ti.static(self.dx)
-        dz = ti.static(self.dz)
+        inv_dx = ti.static(1.0 / self.dx)
+        inv_dz = ti.static(1.0 / self.dz)
         
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
-            sxx_x = (self.sxx[i + 1, j] - self.sxx[i, j]) / dx
-            szz_z = (self.szz[i, j + 1] - self.szz[i, j]) / dz
-            sxz_x = (self.sxz[i + 1, j] - self.sxz[i, j]) / dx
-            sxz_z = (self.sxz[i, j + 1] - self.sxz[i, j]) / dz
+            # Backward difference for time-reversed propagation
+            sxx_x = (self.sxx[i + 1, j] - self.sxx[i, j]) * inv_dx
+            szz_z = (self.szz[i, j + 1] - self.szz[i, j]) * inv_dz
+            sxz_x = (self.sxz[i + 1, j] - self.sxz[i, j]) * inv_dx
+            sxz_z = (self.sxz[i, j + 1] - self.sxz[i, j]) * inv_dz
             
+            # Note: negative sign for backward propagation
             self.u[i, j] += -(sxx_x + sxz_z) * (dt / self.rho_u[i, j])
             self.w[i, j] += -(sxz_x + szz_z) * (dt / self.rho_w[i, j])
             
-            syx_x = (self.syx[i + 1, j] - self.syx[i, j]) / dx
-            syz_z = (self.syz[i, j + 1] - self.syz[i, j]) / dz
+            syx_x = (self.syx[i + 1, j] - self.syx[i, j]) * inv_dx
+            syz_z = (self.syz[i, j + 1] - self.syz[i, j]) * inv_dz
             self.v[i, j] += -(syx_x + syz_z) * (dt / self.rho_field[i, j])
             
     @ti.kernel
     def _update_stress_backward(self):
-        """Update stress field for backward propagation."""
+        """Update stress field for backward propagation - fully parallelized."""
         dt = ti.static(self.dt)
-        dx = ti.static(self.dx)
-        dz = ti.static(self.dz)
+        inv_dx = ti.static(1.0 / self.dx)
+        inv_dz = ti.static(1.0 / self.dz)
         
         for i, j in ti.ndrange((1, self.nx - 1), (1, self.nz - 1)):
-            u_x = (self.u[i, j] - self.u[i - 1, j]) / dx
-            u_z = (self.u[i, j] - self.u[i, j - 1]) / dz
-            w_x = (self.w[i, j] - self.w[i - 1, j]) / dx
-            w_z = (self.w[i, j] - self.w[i, j - 1]) / dz
+            u_x = (self.u[i, j] - self.u[i - 1, j]) * inv_dx
+            u_z = (self.u[i, j] - self.u[i, j - 1]) * inv_dz
+            w_x = (self.w[i, j] - self.w[i - 1, j]) * inv_dx
+            w_z = (self.w[i, j] - self.w[i, j - 1]) * inv_dz
             
-            self.sxx[i, j] += -dt * (self.lam[i, j] * (u_x + w_z) + 2.0 * self.mu[i, j] * u_x)
-            self.szz[i, j] += -dt * (self.lam[i, j] * (u_x + w_z) + 2.0 * self.mu[i, j] * w_z)
+            # Negative sign for backward propagation
+            div_uw = u_x + w_z
+            self.sxx[i, j] += -dt * (self.lam[i, j] * div_uw + 2.0 * self.mu[i, j] * u_x)
+            self.szz[i, j] += -dt * (self.lam[i, j] * div_uw + 2.0 * self.mu[i, j] * w_z)
             self.sxz[i, j] += -dt * self.mxz[i, j] * (u_z + w_x)
             
-            v_x = (self.v[i, j] - self.v[i - 1, j]) / dx
-            v_z = (self.v[i, j] - self.v[i, j - 1]) / dz
+            v_x = (self.v[i, j] - self.v[i - 1, j]) * inv_dx
+            v_z = (self.v[i, j] - self.v[i, j - 1]) * inv_dz
             self.syx[i, j] += -dt * self.myx[i, j] * v_x
             self.syz[i, j] += -dt * self.myz[i, j] * v_z
             
     @ti.kernel
     def _apply_absorbing(self):
-        """Apply absorbing boundary conditions."""
+        """Apply absorbing boundary conditions - parallelized."""
         for i, j in self.u:
-            self.u[i, j] *= self.absorb_coeff[i, j]
-            self.v[i, j] *= self.absorb_coeff[i, j]
-            self.w[i, j] *= self.absorb_coeff[i, j]
-            self.sxx[i, j] *= self.absorb_coeff[i, j]
-            self.sxz[i, j] *= self.absorb_coeff[i, j]
-            self.szz[i, j] *= self.absorb_coeff[i, j]
-            self.syx[i, j] *= self.absorb_coeff[i, j]
-            self.syz[i, j] *= self.absorb_coeff[i, j]
+            coeff = self.absorb_coeff[i, j]
+            self.u[i, j] *= coeff
+            self.v[i, j] *= coeff
+            self.w[i, j] *= coeff
+            self.sxx[i, j] *= coeff
+            self.sxz[i, j] *= coeff
+            self.szz[i, j] *= coeff
+            self.syx[i, j] *= coeff
+            self.syz[i, j] *= coeff
             
     @ti.kernel
     def _set_free_surface(self):
-        """Set free surface boundary condition."""
+        """Set free surface boundary condition - parallelized."""
         for i in range(self.nx):
             self.syz[i, 0] = 0.0
             self.sxz[i, 0] = 0.0
@@ -279,7 +321,7 @@ class BackwardModeling:
             
     @ti.kernel
     def _set_surface_boundary(self):
-        """Set surface boundary with surface matrix."""
+        """Set surface boundary with surface matrix - parallelized."""
         for i, j in self.syz:
             sm = self.surface_matrix[i, j]
             self.syz[i, j] *= sm
@@ -289,7 +331,7 @@ class BackwardModeling:
     @ti.kernel
     def _check_finite(self) -> ti.i32:
         """
-        Check if all fields are finite.
+        Check if all fields are finite - parallelized.
         
         Uses u_val != u_val pattern for NaN detection (standard IEEE-754 trick)
         and magnitude check for overflow detection.
@@ -309,25 +351,29 @@ class BackwardModeling:
                 result = 6
         return result
         
-    def _add_observed_data(self, t: int):
-        """Add observed data as source at receiver locations."""
-        for k, loc in enumerate(self.receiver_loc):
-            i, j = int(loc[0]), int(loc[1])
-            self.u[i, j] += float(self.obsdata_u_np[k, t])
-            self.v[i, j] += float(self.obsdata_v_np[k, t])
-            self.w[i, j] += float(self.obsdata_w_np[k, t])
+    @ti.kernel
+    def _add_observed_data_kernel(self, t: ti.i32):
+        """Add observed data as source at receiver locations - parallelized."""
+        for k in range(self.num_receivers):
+            i = self.recv_loc_field[k, 0]
+            j = self.recv_loc_field[k, 1]
+            self.u[i, j] += self.obsdata_u_field[k, t]
+            self.v[i, j] += self.obsdata_v_field[k, t]
+            self.w[i, j] += self.obsdata_w_field[k, t]
             
-    def _record_synthetic_source(self, t: int):
-        """Record synthetic source at source locations."""
-        for l, loc in enumerate(self.src_loc):
-            i, j = int(loc[0]), int(loc[1])
+    @ti.kernel
+    def _record_synthetic_source_kernel(self, t: ti.i32):
+        """Record synthetic source at source locations - parallelized."""
+        for l in range(self.num_sources):
+            i = self.src_loc_field[l, 0]
+            j = self.src_loc_field[l, 1]
             self.synsrc_u[l, t] = self.u[i, j]
             self.synsrc_v[l, t] = self.v[i, j]
             self.synsrc_w[l, t] = self.w[i, j]
             
     @ti.kernel
     def _correlate(self, fw_u: ti.template(), fw_v: ti.template(), fw_w: ti.template()):
-        """Compute cross-correlation imaging condition."""
+        """Compute cross-correlation imaging condition - fully parallelized."""
         for i, j in self.result_u:
             self.result_u[i, j] += fw_u[i, j] * self.u[i, j]
             self.result_v[i, j] += fw_v[i, j] * self.v[i, j]
@@ -364,6 +410,7 @@ class BackwardModeling:
             0: Success
             4-6: Field became infinite
         """
+        # Pre-allocate forward wavefield fields for correlation
         fw_u_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         fw_v_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         fw_w_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
@@ -372,30 +419,31 @@ class BackwardModeling:
         isnaps_list = list(isnaps)
         
         for it in range(self.nt):
+            # Apply boundary conditions
             if self.surface_matrix is not None:
                 self._set_surface_boundary()
             else:
                 self._set_free_surface()
                 
+            # Backward time stepping
             self._update_velocity_backward()
             
             t = (self.nt - 1) - it
-            self._add_observed_data(t)
+            self._add_observed_data_kernel(t)
             
             self._update_stress_backward()
             self._apply_absorbing()
-            self._record_synthetic_source(t)
+            self._record_synthetic_source_kernel(t)
             
+            # Cross-correlation imaging at snapshot times
             if t in isnaps_set:
                 snap_idx = isnaps_list.index(t)
                 fw_u_field.from_numpy(import_fwdata_u[:, :, snap_idx])
                 fw_v_field.from_numpy(import_fwdata_v[:, :, snap_idx])
                 fw_w_field.from_numpy(import_fwdata_w[:, :, snap_idx])
                 
-                if method == 'cross_correlation':
-                    self._correlate(fw_u_field, fw_v_field, fw_w_field)
-                else:
-                    self._correlate(fw_u_field, fw_v_field, fw_w_field)
+                # Apply imaging condition
+                self._correlate(fw_u_field, fw_v_field, fw_w_field)
                     
                 if display_callback is not None:
                     u_np = self.u.to_numpy()
@@ -403,6 +451,7 @@ class BackwardModeling:
                     w_np = self.w.to_numpy()
                     display_callback(u_np, v_np, w_np, t, self.nx, self.nz, self.dx, self.dz)
                     
+            # Check for numerical stability
             flag = self._check_finite()
             if flag != 0:
                 return flag
