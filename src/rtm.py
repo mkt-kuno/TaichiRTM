@@ -112,7 +112,7 @@ def get_available_memory_mb() -> int:
     return 4000
 
 
-def calculate_optimal_memory_params(target_usage_ratio: float = 0.8) -> tuple:
+def calculate_optimal_memory_params(target_usage_ratio: float = 0.8) -> tuple[int, int]:
     """
     Calculate optimal memory parameters for RTM processing.
     
@@ -416,11 +416,15 @@ class ReverseTimeMigration:
         # Account for observed data and source wavelets
         # observed: num_receivers * nt * 3 * 4 bytes
         # source: num_sources * nt * 3 * 4 bytes  
-        # Estimate conservatively with 100 receivers and 3 sources
-        data_memory = (100 + 3) * nt * num_components * dtype_size
+        # Use actual receiver count from instance, estimate conservatively for sources
+        est_max_receivers = max(100, self.receiver_num)  # At least 100, or actual count
+        est_max_sources = 10  # Conservative estimate for source wavelets
+        data_memory = (est_max_receivers + est_max_sources) * nt * num_components * dtype_size
         
-        # Base memory overhead (Taichi, Python, etc.) - roughly 500MB
-        base_overhead = 500 * 1024 * 1024
+        # Base memory overhead for Taichi runtime, Python interpreter, and system buffers
+        # 500 MiB is a conservative estimate based on typical Taichi+Python memory footprint
+        base_overhead_mib = 500
+        base_overhead = base_overhead_mib * 1024 * 1024
         
         allowed_memory = (total_memory - memory_margin) * 1024 * 1024 - field_memory - data_memory - base_overhead
         
@@ -449,7 +453,8 @@ class ReverseTimeMigration:
             memory_margin: Optional[int] = None,
             method: str = 'cross_correlation',
             display_callback: Optional[Callable] = None,
-            target_memory_ratio: float = 0.8):
+            target_memory_ratio: float = 0.8,
+            stability_check_interval: int = 100):
         """
         Run Reverse Time Migration.
         
@@ -465,6 +470,9 @@ class ReverseTimeMigration:
             Callback for displaying wavefield during simulation
         target_memory_ratio : float
             Target ratio of available memory to use when auto-detecting (default: 0.8 = 80%)
+        stability_check_interval : int
+            How often to check for numerical stability (default: every 100 steps).
+            Higher values improve GPU utilization but may miss instability earlier.
         """
         # Auto-detect memory parameters if not provided
         if total_memory is None or memory_margin is None:
@@ -513,7 +521,8 @@ class ReverseTimeMigration:
                 surface_matrix=surface_matrix
             )
             
-            flag = fw.run(save=True, display_callback=display_callback)
+            flag = fw.run(save=True, display_callback=display_callback, 
+                          stability_check_interval=stability_check_interval)
             
             if flag:
                 print(f'Forward modeling failed with flag {flag}, reducing CFL...')
@@ -540,7 +549,8 @@ class ReverseTimeMigration:
                 import_fwdata_w=fw.w_save,
                 isnaps=fw.isnaps,
                 method=method,
-                display_callback=display_callback
+                display_callback=display_callback,
+                stability_check_interval=stability_check_interval
             )
             
             if flag:
