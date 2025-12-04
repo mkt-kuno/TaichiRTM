@@ -33,9 +33,112 @@ import taichi as ti
 import numpy as np
 from typing import Optional, Callable
 import os
+import subprocess
 
 from .forward_modeling import ForwardModeling
 from .backward_modeling import BackwardModeling
+
+
+def get_system_memory_mb() -> int:
+    """
+    Get total system memory in MiB using cross-platform methods.
+    
+    Returns
+    -------
+    int
+        Total system memory in MiB
+    """
+    try:
+        # Try reading from /proc/meminfo (Linux)
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
+                    # Line format: "MemTotal:       16345712 kB"
+                    parts = line.split()
+                    mem_kb = int(parts[1])
+                    return mem_kb // 1024
+    except (FileNotFoundError, PermissionError, ValueError):
+        pass
+    
+    try:
+        # Fallback: use 'free' command (Linux)
+        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                if line.startswith('Mem:'):
+                    parts = line.split()
+                    return int(parts[1])
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    
+    # Default fallback: assume 8GB
+    return 8000
+
+
+def get_available_memory_mb() -> int:
+    """
+    Get available system memory in MiB.
+    
+    Returns
+    -------
+    int
+        Available system memory in MiB
+    """
+    try:
+        # Try reading from /proc/meminfo (Linux)
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    parts = line.split()
+                    mem_kb = int(parts[1])
+                    return mem_kb // 1024
+    except (FileNotFoundError, PermissionError, ValueError):
+        pass
+    
+    try:
+        # Fallback: use 'free' command (Linux)
+        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                if line.startswith('Mem:'):
+                    parts = line.split()
+                    return int(parts[6])  # 'available' column
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
+        pass
+    
+    # Default fallback: assume 4GB available
+    return 4000
+
+
+def calculate_optimal_memory_params(target_usage_ratio: float = 0.8) -> tuple:
+    """
+    Calculate optimal memory parameters for RTM processing.
+    
+    Parameters
+    ----------
+    target_usage_ratio : float
+        Target ratio of available memory to use (default: 0.8 = 80%)
+        
+    Returns
+    -------
+    tuple
+        (total_memory_mb, memory_margin_mb) for RTM.run()
+    """
+    available_mb = get_available_memory_mb()
+    total_mb = get_system_memory_mb()
+    
+    # Use target_usage_ratio of available memory
+    target_memory = int(available_mb * target_usage_ratio)
+    
+    # Memory margin should be at least 500MB, or 10% of target
+    memory_margin = max(500, int(target_memory * 0.1))
+    
+    print(f"System memory: {total_mb} MiB total, {available_mb} MiB available")
+    print(f"Target memory usage: {target_memory} MiB ({target_usage_ratio*100:.0f}% of available)")
+    
+    return target_memory, memory_margin
 
 
 def init_taichi(backend: str = 'cpu', **kwargs):
@@ -283,24 +386,35 @@ class ReverseTimeMigration:
         return max(1, int(np.ceil(nt / max_steps)))
         
     def run(self, 
-            total_memory: int = 24000,
-            memory_margin: int = 2000,
+            total_memory: Optional[int] = None,
+            memory_margin: Optional[int] = None,
             method: str = 'cross_correlation',
-            display_callback: Optional[Callable] = None):
+            display_callback: Optional[Callable] = None,
+            target_memory_ratio: float = 0.8):
         """
         Run Reverse Time Migration.
         
         Parameters
         ----------
-        total_memory : int
-            Total available memory in MiB
-        memory_margin : int
-            Memory margin in MiB
+        total_memory : int, optional
+            Total available memory in MiB. If None, auto-detect.
+        memory_margin : int, optional
+            Memory margin in MiB. If None, auto-calculate.
         method : str
             Imaging condition method
         display_callback : callable, optional
             Callback for displaying wavefield during simulation
+        target_memory_ratio : float
+            Target ratio of available memory to use when auto-detecting (default: 0.8 = 80%)
         """
+        # Auto-detect memory parameters if not provided
+        if total_memory is None or memory_margin is None:
+            auto_total, auto_margin = calculate_optimal_memory_params(target_memory_ratio)
+            if total_memory is None:
+                total_memory = auto_total
+            if memory_margin is None:
+                memory_margin = auto_margin
+        
         if self.v_fix is not None:
             print(f'Using fixed velocity: {self.v_fix} m/s')
             estimated_v = self.v_fix
