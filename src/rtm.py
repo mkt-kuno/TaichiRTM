@@ -357,8 +357,9 @@ class ReverseTimeMigration:
         bw_memory = BackwardModeling.estimate_memory_bytes(nx, nz, nt, num_sources, num_receivers)
 
         # === Fixed memory (always allocated regardless of snapshots) ===
-        # During backward modeling: input fields + fw_memory + observed_data + bw_memory + snapshots
+        # During backward modeling: input fields + fw_memory + observed_data + bw_memory
         # Both ForwardModeling and BackwardModeling are in memory simultaneously
+        # Note: snapshots are calculated separately and added to this
         fixed_memory = total_input_memory + fw_memory + observed_data_memory + bw_memory
 
         # === Memory per snapshot ===
@@ -394,9 +395,10 @@ class ReverseTimeMigration:
         actual_snapshots = nt // isnap
         actual_snapshot_memory = actual_snapshots * (bytes_per_snapshot + isnaps_overhead_per_snap)
 
-        # Phase 1: Forward modeling (input + fw + snapshots)
+        # Phase 1: Forward modeling (input + fw + snapshots + overhead)
         phase1_total = total_input_memory + fw_memory + actual_snapshot_memory + base_overhead
-        # Phase 2: Backward modeling (input + fw + snapshots + observed + bw)
+        # Phase 2: Backward modeling (fixed_memory + snapshots + overhead)
+        # fixed_memory already includes: input + fw + observed_data + bw
         phase2_total = fixed_memory + actual_snapshot_memory + base_overhead
         total_estimated_memory = phase2_total  # Peak is during backward modeling
 
