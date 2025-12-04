@@ -31,106 +31,296 @@ Steps:
 
 import taichi as ti
 import numpy as np
-from typing import Optional, Callable
+from typing import Optional, Callable, Literal
 import os
 import subprocess
+import platform
 
+from .precision import (
+    get_float_dtype,
+    get_int_dtype,
+    get_numpy_float_dtype,
+    get_numpy_int_dtype,
+    get_precision_settings,
+    get_current_backend,
+    set_precision,
+    set_backend,
+)
 from .forward_modeling import ForwardModeling
 from .backward_modeling import BackwardModeling
+
+
+def _get_windows_memory_mb() -> tuple[int, int]:
+    """
+    Get total and available memory on Windows using wmic command.
+    
+    Returns
+    -------
+    tuple[int, int]
+        (total_mb, available_mb)
+    """
+    total_mb = 8000  # Default fallback
+    available_mb = 4000
+    
+    try:
+        # Get total physical memory
+        result = subprocess.run(
+            ['wmic', 'ComputerSystem', 'get', 'TotalPhysicalMemory'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.isdigit():
+                    total_mb = int(line) // (1024 * 1024)
+                    break
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    
+    try:
+        # Get available memory using wmic
+        result = subprocess.run(
+            ['wmic', 'OS', 'get', 'FreePhysicalMemory'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.isdigit():
+                    available_mb = int(line) // 1024  # FreePhysicalMemory is in KB
+                    break
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    
+    return total_mb, available_mb
+
+
+def _get_linux_memory_mb() -> tuple[int, int]:
+    """
+    Get total and available memory on Linux.
+    
+    Returns
+    -------
+    tuple[int, int]
+        (total_mb, available_mb)
+    """
+    total_mb = 8000
+    available_mb = 4000
+    
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            for line in f:
+                if line.startswith('MemTotal:'):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        total_mb = int(parts[1]) // 1024
+                elif line.startswith('MemAvailable:'):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        available_mb = int(parts[1]) // 1024
+    except (FileNotFoundError, PermissionError, ValueError, IndexError):
+        # Fallback: use 'free' command
+        try:
+            result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    if line.startswith('Mem:'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            total_mb = int(parts[1])
+                        if len(parts) >= 7:
+                            available_mb = int(parts[6])
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
+            pass
+    
+    return total_mb, available_mb
+
+
+def _get_nvidia_gpu_memory_mb() -> tuple[int, int]:
+    """
+    Get NVIDIA GPU memory using nvidia-smi.
+    
+    Returns
+    -------
+    tuple[int, int]
+        (total_mb, available_mb) or (0, 0) if not available
+    """
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total,memory.free', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            if lines:
+                # Use first GPU
+                parts = lines[0].split(',')
+                if len(parts) >= 2:
+                    total_mb = int(parts[0].strip())
+                    free_mb = int(parts[1].strip())
+                    return total_mb, free_mb
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    
+    return 0, 0
+
+
+def _get_rocm_gpu_memory_mb() -> tuple[int, int]:
+    """
+    Get AMD ROCm GPU memory using rocm-smi.
+    
+    Returns
+    -------
+    tuple[int, int]
+        (total_mb, available_mb) or (0, 0) if not available
+    """
+    try:
+        # rocm-smi --showmeminfo vram
+        result = subprocess.run(
+            ['rocm-smi', '--showmeminfo', 'vram'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            output = result.stdout
+            total_mb = 0
+            used_mb = 0
+            
+            for line in output.split('\n'):
+                line_lower = line.lower()
+                if 'total' in line_lower and 'vram' in line_lower:
+                    # Parse total memory
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part.replace('.', '').isdigit():
+                            val = float(part)
+                            # Check unit
+                            if i + 1 < len(parts):
+                                unit = parts[i + 1].upper()
+                                if 'GB' in unit:
+                                    total_mb = int(val * 1024)
+                                elif 'MB' in unit:
+                                    total_mb = int(val)
+                            break
+                elif 'used' in line_lower and 'vram' in line_lower:
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part.replace('.', '').isdigit():
+                            val = float(part)
+                            if i + 1 < len(parts):
+                                unit = parts[i + 1].upper()
+                                if 'GB' in unit:
+                                    used_mb = int(val * 1024)
+                                elif 'MB' in unit:
+                                    used_mb = int(val)
+                            break
+            
+            if total_mb > 0:
+                return total_mb, max(0, total_mb - used_mb)
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    
+    return 0, 0
 
 
 def get_system_memory_mb() -> int:
     """
     Get total system memory in MiB using cross-platform methods.
+    Supports Linux and Windows.
     
     Returns
     -------
     int
         Total system memory in MiB
     """
-    try:
-        # Try reading from /proc/meminfo (Linux)
-        with open('/proc/meminfo', 'r') as f:
-            for line in f:
-                if line.startswith('MemTotal:'):
-                    # Line format: "MemTotal:       16345712 kB"
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        mem_kb = int(parts[1])
-                        return mem_kb // 1024
-    except (FileNotFoundError, PermissionError, ValueError, IndexError):
-        pass
-    
-    try:
-        # Fallback: use 'free' command (Linux)
-        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            lines = result.stdout.strip().split('\n')
-            for line in lines:
-                if line.startswith('Mem:'):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return int(parts[1])
-    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
-        pass
-    
-    # Default fallback: assume 8GB
-    return 8000
+    if platform.system() == 'Windows':
+        total_mb, _ = _get_windows_memory_mb()
+        return total_mb
+    else:
+        total_mb, _ = _get_linux_memory_mb()
+        return total_mb
 
 
 def get_available_memory_mb() -> int:
     """
     Get available system memory in MiB.
+    Supports Linux and Windows.
     
     Returns
     -------
     int
         Available system memory in MiB
     """
-    try:
-        # Try reading from /proc/meminfo (Linux)
-        with open('/proc/meminfo', 'r') as f:
-            for line in f:
-                if line.startswith('MemAvailable:'):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        mem_kb = int(parts[1])
-                        return mem_kb // 1024
-    except (FileNotFoundError, PermissionError, ValueError, IndexError):
-        pass
-    
-    try:
-        # Fallback: use 'free' command (Linux)
-        # Format: "Mem:  total  used  free  shared  buff/cache  available"
-        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            lines = result.stdout.strip().split('\n')
-            for line in lines:
-                if line.startswith('Mem:'):
-                    parts = line.split()
-                    if len(parts) >= 7:
-                        return int(parts[6])  # 'available' column
-    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
-        pass
-    
-    # Default fallback: assume 4GB available
-    return 4000
+    if platform.system() == 'Windows':
+        _, available_mb = _get_windows_memory_mb()
+        return available_mb
+    else:
+        _, available_mb = _get_linux_memory_mb()
+        return available_mb
 
 
-def calculate_optimal_memory_params(target_usage_ratio: float = 0.8) -> tuple[int, int]:
+def get_gpu_memory_mb() -> tuple[int, int]:
+    """
+    Get GPU memory in MiB.
+    Supports NVIDIA (CUDA) and AMD (ROCm) GPUs on Linux and Windows.
+    
+    Returns
+    -------
+    tuple[int, int]
+        (total_mb, available_mb) or (0, 0) if no GPU detected
+    """
+    # Try NVIDIA first
+    total_mb, available_mb = _get_nvidia_gpu_memory_mb()
+    if total_mb > 0:
+        return total_mb, available_mb
+    
+    # Try AMD ROCm
+    total_mb, available_mb = _get_rocm_gpu_memory_mb()
+    if total_mb > 0:
+        return total_mb, available_mb
+    
+    return 0, 0
+
+
+def calculate_optimal_memory_params(target_usage_ratio: float = 0.8, 
+                                    use_gpu: bool = False) -> tuple[int, int]:
     """
     Calculate optimal memory parameters for RTM processing.
+    
+    Automatically detects available memory based on the backend:
+    - For CPU: Uses system RAM (Linux/Windows)
+    - For GPU: Uses GPU VRAM (NVIDIA CUDA or AMD ROCm)
     
     Parameters
     ----------
     target_usage_ratio : float
         Target ratio of available memory to use (default: 0.8 = 80%)
+    use_gpu : bool
+        If True, detect GPU memory instead of system memory.
+        Automatically set based on current backend if not explicitly specified.
         
     Returns
     -------
-    tuple
+    tuple[int, int]
         (total_memory_mb, memory_margin_mb) for RTM.run()
     """
+    current_backend = get_current_backend()
+    
+    # Determine if we should use GPU memory based on current backend
+    if use_gpu or current_backend in ('gpu', 'cuda', 'vulkan', 'metal'):
+        gpu_total, gpu_available = get_gpu_memory_mb()
+        if gpu_total > 0:
+            target_memory = int(gpu_available * target_usage_ratio)
+            memory_margin = max(200, int(target_memory * 0.1))
+            print(f"GPU memory: {gpu_total} MiB total, {gpu_available} MiB available")
+            print(f"Target GPU memory usage: {target_memory} MiB ({target_usage_ratio*100:.0f}% of available)")
+            return target_memory, memory_margin
+        else:
+            print("Warning: GPU memory detection failed, falling back to system memory")
+    
+    # Use system memory
     available_mb = get_available_memory_mb()
     total_mb = get_system_memory_mb()
     
@@ -146,17 +336,28 @@ def calculate_optimal_memory_params(target_usage_ratio: float = 0.8) -> tuple[in
     return target_memory, memory_margin
 
 
-def init_taichi(backend: str = 'cpu', **kwargs):
+def init_taichi(backend: str = 'cpu', 
+                float_precision: int = 32,
+                int_precision: int = 32,
+                **kwargs):
     """
-    Initialize Taichi with specified backend.
+    Initialize Taichi with specified backend and precision settings.
     
     Parameters
     ----------
     backend : str
         Backend to use: 'cpu', 'gpu', 'cuda', 'vulkan', 'opengl', 'metal'
+    float_precision : int
+        Float precision: 16, 32, or 64 (default: 32)
+    int_precision : int
+        Integer precision: 16, 32, or 64 (default: 32)
     **kwargs
         Additional arguments passed to ti.init()
     """
+    # Set precision settings
+    set_precision(float_precision, int_precision)
+    set_backend(backend)
+    
     arch_map = {
         'cpu': ti.cpu,
         'gpu': ti.gpu,

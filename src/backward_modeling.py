@@ -24,6 +24,9 @@ import taichi as ti
 import numpy as np
 from typing import Optional, Callable
 
+# Import precision utilities from precision module
+from .precision import get_float_dtype, get_int_dtype, get_numpy_float_dtype, get_numpy_int_dtype
+
 
 @ti.data_oriented
 class BackwardModeling:
@@ -82,13 +85,19 @@ class BackwardModeling:
         self.surface_matrix_np = kwargs.get('surface_matrix', None)
         self.dt = 1.0 / self.fs
         
+        # Get precision types
+        self.float_dtype = get_float_dtype()
+        self.int_dtype = get_int_dtype()
+        self.np_float_dtype = get_numpy_float_dtype()
+        self.np_int_dtype = get_numpy_int_dtype()
+        
         # Store locations count
         self.num_sources = len(self.src_loc)
         self.num_receivers = len(self.receiver_loc)
         
-        self.obsdata_u_np = np.asarray(kwargs['observed_data_u'], dtype=np.float32)
-        self.obsdata_v_np = np.asarray(kwargs['observed_data_v'], dtype=np.float32)
-        self.obsdata_w_np = np.asarray(kwargs['observed_data_w'], dtype=np.float32)
+        self.obsdata_u_np = np.asarray(kwargs['observed_data_u'], dtype=self.np_float_dtype)
+        self.obsdata_v_np = np.asarray(kwargs['observed_data_v'], dtype=self.np_float_dtype)
+        self.obsdata_w_np = np.asarray(kwargs['observed_data_w'], dtype=self.np_float_dtype)
         
         self._init_fields()
         self._init_material(kwargs)
@@ -98,66 +107,74 @@ class BackwardModeling:
         
     def _init_fields(self):
         """Initialize Taichi fields."""
+        dtype = self.float_dtype
+        int_dtype = self.int_dtype
+        
         # Stress fields
-        self.sxx = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.sxz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.szz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.syx = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.syz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.sxx = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.sxz = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.szz = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.syx = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.syz = ti.field(dtype=dtype, shape=(self.nx, self.nz))
         
         # Velocity fields
-        self.u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.v = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.u = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.v = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.w = ti.field(dtype=dtype, shape=(self.nx, self.nz))
         
         # Material property fields
-        self.mu = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.lam = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.mxz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.myx = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.myz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.mu = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.lam = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.mxz = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.myx = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.myz = ti.field(dtype=dtype, shape=(self.nx, self.nz))
         
         # Density fields
-        self.rho_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.rho_u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.rho_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.rho_field = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.rho_u = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.rho_w = ti.field(dtype=dtype, shape=(self.nx, self.nz))
         
         # Absorbing boundary
-        self.absorb_coeff = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.absorb_coeff = ti.field(dtype=dtype, shape=(self.nx, self.nz))
         
         # Surface matrix (optional)
         if self.surface_matrix_np is not None:
-            self.surface_matrix = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+            self.surface_matrix = ti.field(dtype=dtype, shape=(self.nx, self.nz))
         else:
             self.surface_matrix = None
             
         # Synthetic source at source locations
-        self.synsrc_u = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
-        self.synsrc_v = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
-        self.synsrc_w = ti.field(dtype=ti.f32, shape=(self.num_sources, self.nt))
+        self.synsrc_u = ti.field(dtype=dtype, shape=(self.num_sources, self.nt))
+        self.synsrc_v = ti.field(dtype=dtype, shape=(self.num_sources, self.nt))
+        self.synsrc_w = ti.field(dtype=dtype, shape=(self.num_sources, self.nt))
         
         # RTM result images
-        self.result_u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.result_v = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.result_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        self.result_u = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.result_v = ti.field(dtype=dtype, shape=(self.nx, self.nz))
+        self.result_w = ti.field(dtype=dtype, shape=(self.nx, self.nz))
         
     def _init_locations(self):
         """Initialize source and receiver location fields for parallel access."""
+        int_dtype = self.int_dtype
+        np_int_dtype = self.np_int_dtype
+        
         # Source locations as Taichi field
-        self.src_loc_field = ti.field(dtype=ti.i32, shape=(self.num_sources, 2))
-        src_loc_np = np.array(self.src_loc, dtype=np.int32)
+        self.src_loc_field = ti.field(dtype=int_dtype, shape=(self.num_sources, 2))
+        src_loc_np = np.array(self.src_loc, dtype=np_int_dtype)
         self.src_loc_field.from_numpy(src_loc_np)
         
         # Receiver locations as Taichi field
-        self.recv_loc_field = ti.field(dtype=ti.i32, shape=(self.num_receivers, 2))
-        recv_loc_np = np.array(self.receiver_loc, dtype=np.int32)
+        self.recv_loc_field = ti.field(dtype=int_dtype, shape=(self.num_receivers, 2))
+        recv_loc_np = np.array(self.receiver_loc, dtype=np_int_dtype)
         self.recv_loc_field.from_numpy(recv_loc_np)
         
     def _init_observed_data(self):
         """Initialize observed data as Taichi fields for parallel access."""
-        self.obsdata_u_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
-        self.obsdata_v_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
-        self.obsdata_w_field = ti.field(dtype=ti.f32, shape=(self.num_receivers, self.nt))
+        dtype = self.float_dtype
+        
+        self.obsdata_u_field = ti.field(dtype=dtype, shape=(self.num_receivers, self.nt))
+        self.obsdata_v_field = ti.field(dtype=dtype, shape=(self.num_receivers, self.nt))
+        self.obsdata_w_field = ti.field(dtype=dtype, shape=(self.num_receivers, self.nt))
         
         self.obsdata_u_field.from_numpy(self.obsdata_u_np)
         self.obsdata_v_field.from_numpy(self.obsdata_v_np)
@@ -165,20 +182,22 @@ class BackwardModeling:
         
     def _init_material(self, kwargs):
         """Initialize material properties."""
-        vs_np = kwargs.get('vs', np.ones((self.nx, self.nz), dtype=np.float32) * 200)
+        np_float_dtype = self.np_float_dtype
+        
+        vs_np = kwargs.get('vs', np.ones((self.nx, self.nz), dtype=np_float_dtype) * 200)
         vp_np = kwargs.get('vp', vs_np * np.sqrt(6))
-        rho_np = kwargs.get('rho', np.ones((self.nx, self.nz), dtype=np.float32) * 1800)
+        rho_np = kwargs.get('rho', np.ones((self.nx, self.nz), dtype=np_float_dtype) * 1800)
         
         if isinstance(vs_np, (int, float)):
-            vs_np = np.ones((self.nx, self.nz), dtype=np.float32) * vs_np
+            vs_np = np.ones((self.nx, self.nz), dtype=np_float_dtype) * vs_np
         if isinstance(vp_np, (int, float)):
-            vp_np = np.ones((self.nx, self.nz), dtype=np.float32) * vp_np
+            vp_np = np.ones((self.nx, self.nz), dtype=np_float_dtype) * vp_np
         if isinstance(rho_np, (int, float)):
-            rho_np = np.ones((self.nx, self.nz), dtype=np.float32) * rho_np
+            rho_np = np.ones((self.nx, self.nz), dtype=np_float_dtype) * rho_np
             
-        vs_np = np.asarray(vs_np, dtype=np.float32)
-        vp_np = np.asarray(vp_np, dtype=np.float32)
-        rho_np = np.asarray(rho_np, dtype=np.float32)
+        vs_np = np.asarray(vs_np, dtype=np_float_dtype)
+        vp_np = np.asarray(vp_np, dtype=np_float_dtype)
+        rho_np = np.asarray(rho_np, dtype=np_float_dtype)
         
         mu_np = rho_np * vs_np ** 2
         lam_np = ((vp_np / vs_np) ** 2 - 2) * mu_np
@@ -191,7 +210,7 @@ class BackwardModeling:
         self._compute_rho_avg()
         
         if self.surface_matrix_np is not None:
-            self.surface_matrix.from_numpy(np.asarray(self.surface_matrix_np, dtype=np.float32))
+            self.surface_matrix.from_numpy(np.asarray(self.surface_matrix_np, dtype=np_float_dtype))
             
     @ti.kernel
     def _init_absorbing_kernel(self, FW: ti.i32, a: ti.f32):

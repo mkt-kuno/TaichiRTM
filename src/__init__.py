@@ -21,11 +21,22 @@ A GPU-accelerated reverse time migration package for seismic exploration
 using the Taichi programming language.
 """
 
+from .precision import (
+    get_float_dtype,
+    get_int_dtype,
+    get_numpy_float_dtype,
+    get_numpy_int_dtype,
+    get_precision_settings,
+    get_current_backend,
+    set_precision,
+    set_backend,
+)
 from .rtm import (
     ReverseTimeMigration,
     init_taichi,
     get_system_memory_mb,
     get_available_memory_mb,
+    get_gpu_memory_mb,
     calculate_optimal_memory_params,
 )
 from .forward_modeling import ForwardModeling
@@ -47,7 +58,16 @@ __all__ = [
     'init_taichi',
     'get_system_memory_mb',
     'get_available_memory_mb',
+    'get_gpu_memory_mb',
     'calculate_optimal_memory_params',
+    'get_float_dtype',
+    'get_int_dtype',
+    'get_numpy_float_dtype',
+    'get_numpy_int_dtype',
+    'get_precision_settings',
+    'get_current_backend',
+    'set_precision',
+    'set_backend',
     'ForwardModeling',
     'BackwardModeling',
     'load_rtm_results',
