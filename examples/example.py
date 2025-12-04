@@ -16,6 +16,11 @@ Coordinate system:
    y    | 
         z 
         (vertical direction)
+
+Note on performance:
+- Grid size scales with (receiver_distance / velocity * fs)^2
+- Reduce fs (sampling frequency) or time_to for faster processing
+- Use GPU backend ('cuda' or 'vulkan') for better performance
 """
 
 import sys
@@ -138,33 +143,51 @@ def main():
     print(f"Found {len(npzs_path_list)} data files")
     
     # Parameters
-    sampling_freq = 100000  # Hz
-    time_to = 0.2  # seconds
+    # Note: For large datasets, consider reducing sampling_freq or time_to
+    # to reduce memory usage and processing time
+    sampling_freq = 50000  # Hz (downsampled from original 100000 Hz)
+    time_to = 0.05  # seconds (use shorter time for faster demo)
     velocity = 120  # m/s
     
     # Output directory
     output_dir = os.path.join(script_dir, 'results')
     os.makedirs(output_dir, exist_ok=True)
     
-    # Process each data file (limit to first 3 for demo)
-    for npz_path in npzs_path_list[:3]:
+    # Process first data file for demo
+    for npz_path in npzs_path_list[:1]:
         print(f"\nProcessing: {os.path.basename(npz_path)}")
         
         npz = np.load(npz_path)
-        distance = npz['distance']
+        
+        # Use subset of receivers for faster processing (20 receivers instead of 60)
+        num_receivers = 20
+        receiver_step = max(1, len(npz['distance']) // num_receivers)
+        distance = npz['distance'][::receiver_step][:num_receivers]
+        
         source_x = float(npz['source_x'])
-        source_ch = get_source_ch(distance, source_x)
+        source_ch = get_source_ch(npz['distance'], source_x)  # Use original distance for source channel
         
         fs = float(sampling_freq)
-        nt = int(fs * time_to)
+        original_fs = 100000.0
+        downsample_factor = int(original_fs / fs)
+        original_samples = int(original_fs * time_to)
         
-        observed_u = npz['x'][:, :nt].astype(np.float32)
-        observed_v = npz['y'][:, :nt].astype(np.float32)
-        observed_w = npz['z'][:, :nt].astype(np.float32)
+        # Downsample and subset the data for manageable grid size
+        # Step 1: Select subset of receivers (every Nth receiver)
+        receiver_indices = slice(None, None, receiver_step)
+        # Step 2: Select time samples up to time_to and downsample
+        time_indices = slice(None, original_samples, downsample_factor)
         
-        source_u = npz['x'][source_ch, :nt].astype(np.float32)
-        source_v = npz['y'][source_ch, :nt].astype(np.float32)
-        source_w = npz['z'][source_ch, :nt].astype(np.float32)
+        observed_u = npz['x'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
+        observed_v = npz['y'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
+        observed_w = npz['z'][receiver_indices, time_indices][:num_receivers].astype(np.float32)
+        
+        source_u = npz['x'][source_ch, time_indices].astype(np.float32)
+        source_v = npz['y'][source_ch, time_indices].astype(np.float32)
+        source_w = npz['z'][source_ch, time_indices].astype(np.float32)
+        
+        print(f"  Receivers: {len(distance)}, Samples: {observed_u.shape[1]}")
+        print(f"  Sampling freq: {fs} Hz, Duration: {time_to} s")
         
         # Create RTM instance
         rtm = ReverseTimeMigration(
@@ -179,12 +202,13 @@ def main():
             fs=fs,
             vmin=80,
             vmax=300,
-            vstep=2000,
+            vstep=100,
             v_fix=velocity,
+            absorbing_frame=30,  # Smaller absorbing frame for demo
         )
         
-        # Run RTM (without display callback for batch processing)
-        rtm.run(total_memory=28000, memory_margin=4000)
+        # Run RTM
+        rtm.run(total_memory=8000, memory_margin=1000)
         
         # Save results
         savename = os.path.splitext(os.path.basename(npz_path))[0]

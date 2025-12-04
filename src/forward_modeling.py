@@ -323,13 +323,20 @@ class ForwardModeling:
             
     @ti.kernel
     def _check_finite(self) -> ti.i32:
-        """Check if all fields are finite."""
+        """
+        Check if all fields are finite.
+        
+        Uses u_val != u_val pattern for NaN detection (standard IEEE-754 trick)
+        and magnitude check for overflow detection.
+        """
         result = 0
         for i, j in self.u:
             u_val = self.u[i, j]
             v_val = self.v[i, j]
             w_val = self.w[i, j]
-            if u_val != u_val or ti.abs(u_val) > 1e30:  # NaN or very large
+            # NaN check: NaN != NaN is True in IEEE-754
+            # Overflow check: values exceeding 1e30 indicate numerical instability
+            if u_val != u_val or ti.abs(u_val) > 1e30:
                 result = 1
             if v_val != v_val or ti.abs(v_val) > 1e30:
                 result = 2
