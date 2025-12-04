@@ -39,7 +39,7 @@ from .backward_modeling import BackwardModeling
 from .forward_modeling import ForwardModeling
 
 
-def init_taichi(backend: str = 'cpu', default_fp=None, **kwargs):
+def init_taichi(backend: str = 'cpu', **kwargs):
     """
     Initialize Taichi with specified backend.
     
@@ -47,8 +47,6 @@ def init_taichi(backend: str = 'cpu', default_fp=None, **kwargs):
     ----------
     backend : str
         Backend to use: 'cpu', 'gpu', 'cuda', 'vulkan', 'opengl', 'metal'
-    default_fp : optional
-        Default floating-point type. If ti.f64, fast_math is disabled.
     **kwargs
         Additional arguments passed to ti.init()
     """
@@ -69,16 +67,11 @@ def init_taichi(backend: str = 'cpu', default_fp=None, **kwargs):
 
     # fast_math should be OFF when ti.f64 is specified
     if 'fast_math' not in kwargs:
-        if default_fp is not None and default_fp is ti.f64:
-            kwargs['fast_math'] = False
-        else:
-            kwargs['fast_math'] = True
+        kwargs['fast_math'] = True
 
     # Build init arguments
     init_kwargs = {'arch': arch, **kwargs}
-    if default_fp is not None:
-        init_kwargs['default_fp'] = default_fp
-
+    
     ti.init(**init_kwargs)
 
 
