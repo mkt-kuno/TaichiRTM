@@ -138,15 +138,15 @@ def main():
         # Use context manager for automatic memory cleanup
         with ReverseTimeMigration() as rtm:
             # New Fluent API - configure and run
-            rtm.set_observed_data(observed_u, observed_v, observed_w) \
-               .set_source(source_u, source_v, source_w, source_x) \
-               .set_receivers(distance) \
-               .set_frequency(fs) \
-               .set_velocity_range(80, 300, 100) \
-               .fix_velocity(velocity) \
-               .set_boundary(absorbing_frame) \
-               .set_memory(4.0) \
-               .run()
+            rtm.set_observed_data(observed_u, observed_v, observed_w)
+            rtm.set_source(source_u, source_v, source_w, source_x)
+            rtm.set_receivers(distance)
+            rtm.set_frequency(fs)
+            rtm.set_velocity_range(80, 300, 100)
+            rtm.fix_velocity(velocity)
+            rtm.set_boundary(absorbing_frame)
+            rtm.set_memory(4.0)
+            rtm.run()
 
             # Save results
             savename = os.path.splitext(os.path.basename(npz_path))[0]
