@@ -358,7 +358,7 @@ class ReverseTimeMigration:
 
         # === Memory per snapshot ===
         # u_save_field, v_save_field, w_save_field (each nx*nz*num_snaps)
-        bytes_per_snapshot = nx * nz * dtype_size * num_components
+        bytes_per_snapshot = nx * nz * dtype_size * num_components * 2
         # isnaps_field overhead per snapshot
         isnaps_overhead_per_snap = int_size
 
