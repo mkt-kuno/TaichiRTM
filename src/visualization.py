@@ -50,6 +50,10 @@ class RTMViewer:
     >>> viewer.close()
     """
 
+    # GUI positioning constants (x, y, width, height as fractions of window size)
+    _GUI_TITLE_POS = (0.02, 0.02, 0.2, 0.1)
+    _GUI_CONTROLS_POS = (0.02, 0.02, 0.25, 0.15)
+
     def __init__(self, width: int = 800, height: int = 600, title: str = "TaichiRTM Viewer"):
         self.width = width
         self.height = height
@@ -146,10 +150,23 @@ class RTMViewer:
 
     @ti.kernel
     def _copy_to_field(self, rgb: ti.types.ndarray(dtype=ti.f32, ndim=3)):
-        """Copy RGB data to Taichi field with transposition for display."""
+        """
+        Copy RGB data to Taichi field with transposition for display.
+
+        Taichi GGUI uses a coordinate system where x is horizontal (width)
+        and y is vertical (height), but images are typically stored as
+        (height, width, channels). This kernel transposes the data so that
+        image row index maps to vertical axis and column index maps to
+        horizontal axis for correct display orientation.
+
+        Parameters
+        ----------
+        rgb : np.ndarray
+            RGB image array with shape (height, width, 3)
+        """
         for i, j in self._image_field:
-            # Transpose for correct display orientation
-            # Input: (height, width, 3), field: (width, height)
+            # Transpose: image[row, col] -> field[col, row]
+            # This maps image rows to vertical axis (j) and columns to horizontal axis (i)
             self._image_field[i, j] = ti.Vector([
                 rgb[j, i, 0],
                 rgb[j, i, 1],
@@ -188,7 +205,8 @@ class RTMViewer:
         self._ensure_window()
 
         if title is not None:
-            self._window.GUI.begin(title, 0.02, 0.02, 0.2, 0.1)
+            pos = self._GUI_TITLE_POS
+            self._window.GUI.begin(title, pos[0], pos[1], pos[2], pos[3])
             self._window.GUI.text(title)
             self._window.GUI.end()
 
@@ -296,7 +314,8 @@ class RTMViewer:
             self._copy_to_field(rgb)
 
             # Display with GUI text
-            self._window.GUI.begin("Controls", 0.02, 0.02, 0.25, 0.15)
+            pos = self._GUI_CONTROLS_POS
+            self._window.GUI.begin("Controls", pos[0], pos[1], pos[2], pos[3])
             self._window.GUI.text(f"Current: {comp.upper()} component")
             self._window.GUI.text("Press 1/2/3 to switch U/V/W")
             self._window.GUI.text("Press ESC to exit")
@@ -369,6 +388,8 @@ def create_realtime_callback(viewer: Optional[RTMViewer] = None,
             data = w
 
         # Display non-blocking to allow computation to continue
+        # Transpose: wavefield arrays are (nx, nz) but images display as (height, width)
+        # so we transpose to get (nz, nx) where nz is the vertical axis (depth)
         viewer.show_image(data.T, title=f"t={it}", cmap=cmap, block=False)
 
     return callback
