@@ -170,7 +170,13 @@ def prepare_image_data(image: np.ndarray,
     
     if attenuate_region is not None:
         x_start, x_end, z_start, z_end = attenuate_region
-        result[x_start:x_end, z_start:z_end] *= attenuation_factor
+        # Bounds checking for safe array slicing
+        x_start = max(0, x_start)
+        x_end = min(result.shape[0], x_end)
+        z_start = max(0, z_start)
+        z_end = min(result.shape[1], z_end)
+        if x_start < x_end and z_start < z_end:
+            result[x_start:x_end, z_start:z_end] *= attenuation_factor
         
     return result
 

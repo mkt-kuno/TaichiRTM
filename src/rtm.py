@@ -185,7 +185,8 @@ class ReverseTimeMigration:
         
         for v in v_array:
             abs_d = np.abs(self.receiver_loc - self.source_loc)
-            tsteps = (self.fs * abs_d / v).astype(np.int32)
+            # Round before conversion to avoid truncation issues
+            tsteps = np.round(self.fs * abs_d / v).astype(np.int32)
             tsteps = tsteps - np.min(tsteps)
             L_t = L - np.max(tsteps)
             
@@ -272,9 +273,10 @@ class ReverseTimeMigration:
     def _compute_isnap(self, total_memory: int, memory_margin: int, 
                        nx: int, nz: int, nt: int) -> int:
         """Compute snapshot interval based on available memory."""
-        dtype_size = 4  # float32
+        dtype_size = 4  # float32 bytes
+        num_components = 3  # u, v, w velocity components
         allowed_memory = (total_memory - memory_margin) * 1024 * 1024
-        max_steps = allowed_memory // (nx * nz * dtype_size) // 3
+        max_steps = allowed_memory // (nx * nz * dtype_size) // num_components
         
         if max_steps == 0:
             return nt
