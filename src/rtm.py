@@ -38,7 +38,7 @@ from .forward_modeling import ForwardModeling
 from .backward_modeling import BackwardModeling
 
 
-def init_taichi(backend: str = 'cpu', **kwargs):
+def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8, default_fp=None, **kwargs):
     """
     Initialize Taichi with specified backend.
     
@@ -46,6 +46,12 @@ def init_taichi(backend: str = 'cpu', **kwargs):
     ----------
     backend : str
         Backend to use: 'cpu', 'gpu', 'cuda', 'vulkan', 'opengl', 'metal'
+    device_memory_GB : float
+        Device memory to allocate in GB (default: 8).
+        This parameter is mainly for GPU backends.
+    default_fp : optional
+        Default floating point type (e.g., ti.f32, ti.f64)
+        When ti.f64 is specified, fast_math is disabled automatically
     **kwargs
         Additional arguments passed to ti.init()
     """
@@ -59,7 +65,21 @@ def init_taichi(backend: str = 'cpu', **kwargs):
     }
     
     arch = arch_map.get(backend.lower(), ti.cpu)
-    ti.init(arch=arch, **kwargs)
+    
+    # Set defaults for advanced_optimization and fast_math
+    kwargs.setdefault('advanced_optimization', True)
+    
+    # Disable fast_math when f64 is used for precision, otherwise enable by default
+    if default_fp is not None and default_fp == ti.f64:
+        kwargs.setdefault('fast_math', False)
+    else:
+        kwargs.setdefault('fast_math', True)
+    
+    # Only pass default_fp when explicitly specified
+    if default_fp is not None:
+        ti.init(arch=arch, device_memory_GB=device_memory_GB, default_fp=default_fp, **kwargs)
+    else:
+        ti.init(arch=arch, device_memory_GB=device_memory_GB, **kwargs)
 
 
 class ReverseTimeMigration:
