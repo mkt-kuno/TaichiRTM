@@ -189,7 +189,6 @@ class ReverseTimeMigration:
         # Internal tracking
         self._fw_instance = None
         self._bw_instance = None
-        self._taichi_fields = []
 
         # If kwargs provided, use legacy API
         if kwargs:
@@ -265,13 +264,6 @@ class ReverseTimeMigration:
         if self._bw_instance is not None:
             self._bw_instance.cleanup()
             self._bw_instance = None
-
-        # Release any Taichi fields created in run()
-        for field in self._taichi_fields:
-            # Setting to None allows Python GC to collect
-            # Taichi will handle field deallocation
-            pass
-        self._taichi_fields.clear()
 
     # ==================== Fluent API Methods ====================
 
@@ -488,17 +480,32 @@ class ReverseTimeMigration:
 
     def _check_parameters(self):
         """Validate input parameters."""
-        # Check required parameters are set
+        # Check required parameters are set with helpful error messages
         if self.observed_u is None or self.observed_v is None or self.observed_w is None:
-            raise ValueError('Observed data must be provided')
+            raise ValueError(
+                'Observed data must be provided. '
+                'Use set_observed_data(observed_u, observed_v, observed_w) to set it.'
+            )
         if self.source_u is None or self.source_v is None or self.source_w is None:
-            raise ValueError('Source functions must be provided')
+            raise ValueError(
+                'Source functions must be provided. '
+                'Use set_source(source_u, source_v, source_w, source_loc) to set them.'
+            )
         if self.receiver_loc is None:
-            raise ValueError('Receiver locations must be provided')
+            raise ValueError(
+                'Receiver locations must be provided. '
+                'Use set_receivers(receiver_loc) to set them.'
+            )
         if self.source_loc is None:
-            raise ValueError('Source location must be provided')
+            raise ValueError(
+                'Source location must be provided. '
+                'Use set_source(source_u, source_v, source_w, source_loc) to set it.'
+            )
         if self.fs is None:
-            raise ValueError('Sampling frequency must be provided')
+            raise ValueError(
+                'Sampling frequency must be provided. '
+                'Use set_frequency(fs) to set it.'
+            )
 
         # Check data shapes
         if self.observed_u.shape != self.observed_v.shape or self.observed_u.shape != self.observed_w.shape:

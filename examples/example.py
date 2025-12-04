@@ -6,6 +6,7 @@ This example demonstrates the new Fluent API with context manager support
 for automatic memory cleanup when processing multiple files.
 """
 
+import glob
 import os
 import sys
 
@@ -13,8 +14,6 @@ import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.dirname(script_dir)
 sys.path.insert(0, src_dir)
-
-import glob
 
 import numpy as np
 
