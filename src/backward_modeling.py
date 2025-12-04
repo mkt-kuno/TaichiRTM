@@ -356,12 +356,11 @@ class BackwardModeling:
             self.result_w[i, j] += fw_w[i, j, snap_idx] * self.w[i, j]
 
     @ti.kernel
-    def _find_snap_idx(self, isnaps_field: ti.template(), t: ti.i32, num_snaps: ti.i32) -> ti.i32:
-        """Find snapshot index for timestep t. Returns -1 if not found."""
-        result = -1
-        for idx in range(num_snaps):
-            if isnaps_field[idx] == t:
-                result = idx
+    def _check_isnap_match(self, isnaps_field: ti.template(), idx: ti.i32, t: ti.i32) -> ti.i32:
+        """Check if snapshot at idx matches timestep t. Returns 1 if match, 0 otherwise."""
+        result = 0
+        if isnaps_field[idx] == t:
+            result = 1
         return result
 
     def run_calc(self,
@@ -370,6 +369,7 @@ class BackwardModeling:
                  import_fwdata_w,
                  isnaps_field,
                  num_snaps: int,
+                 isnap_interval: int,
                  method: str = 'cross_correlation',
                  display_callback: Optional[Callable] = None,
                  stability_check_interval: int = 100) -> int:
@@ -388,6 +388,8 @@ class BackwardModeling:
             Timesteps of snapshots as Taichi field (num_snaps,)
         num_snaps : int
             Number of snapshots
+        isnap_interval : int
+            Snapshot interval (for O(1) index computation)
         method : str
             Imaging condition: 'cross_correlation' or 'convolution'
         display_callback : callable, optional
@@ -419,17 +421,21 @@ class BackwardModeling:
             self._apply_absorbing()
             self._record_synthetic_source_kernel(t)
             
-            # Cross-correlation imaging at snapshot times - all on GPU
-            snap_idx = self._find_snap_idx(isnaps_field, t, num_snaps)
-            if snap_idx >= 0:
-                # Directly correlate using the 3D snapshot field - no CPU transfer needed
-                self._correlate_with_snapshot(import_fwdata_u, import_fwdata_v, import_fwdata_w, snap_idx)
-                    
-                if display_callback is not None:
-                    u_np = self.u.to_numpy()
-                    v_np = self.v.to_numpy()
-                    w_np = self.w.to_numpy()
-                    display_callback(u_np, v_np, w_np, t, self.nx, self.nz, self.dx, self.dz)
+            # Cross-correlation imaging at snapshot times - O(1) lookup
+            # Compute expected snapshot index based on known interval pattern
+            if t > 0 and t % isnap_interval == 0:
+                snap_idx = t // isnap_interval - 1
+                if 0 <= snap_idx < num_snaps:
+                    # Verify this is a valid snapshot (sanity check)
+                    if self._check_isnap_match(isnaps_field, snap_idx, t) == 1:
+                        # Directly correlate using the 3D snapshot field - no CPU transfer needed
+                        self._correlate_with_snapshot(import_fwdata_u, import_fwdata_v, import_fwdata_w, snap_idx)
+                        
+                        if display_callback is not None:
+                            u_np = self.u.to_numpy()
+                            v_np = self.v.to_numpy()
+                            w_np = self.w.to_numpy()
+                            display_callback(u_np, v_np, w_np, t, self.nx, self.nz, self.dx, self.dz)
                     
             # Check for numerical stability less frequently to improve GPU utilization
             if it % stability_check_interval == 0:
