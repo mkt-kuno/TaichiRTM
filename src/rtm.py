@@ -30,6 +30,7 @@ Steps:
 """
 
 import os
+import warnings
 from typing import Callable, Optional
 
 import numpy as np
@@ -39,10 +40,23 @@ from .backward_modeling import BackwardModeling
 from .forward_modeling import ForwardModeling
 
 
+def reset_taichi():
+    """
+    Reset Taichi runtime completely.
+
+    This releases all GPU/CPU memory allocated by Taichi, including JIT-compiled
+    kernels. Use this when you need a complete memory cleanup between runs.
+
+    Note: After calling this function, you must call init_taichi() again before
+    using any Taichi functionality.
+    """
+    ti.reset()
+
+
 def init_taichi(backend: str = 'cpu', **kwargs):
     """
     Initialize Taichi with specified backend.
-    
+
     Parameters
     ----------
     backend : str
@@ -78,8 +92,33 @@ def init_taichi(backend: str = 'cpu', **kwargs):
 class ReverseTimeMigration:
     """
     Reverse Time Migration for seismic exploration.
-    
-    Parameters
+
+    This class supports two API styles:
+
+    1. Fluent API (recommended):
+        ```python
+        with ReverseTimeMigration() as rtm:
+            rtm.set_observed_data(observed_u, observed_v, observed_w)
+            rtm.set_source(source_u, source_v, source_w, source_x)
+            rtm.set_receivers(distance)
+            rtm.set_frequency(fs)
+            rtm.fix_velocity(velocity)
+            rtm.set_boundary(50)
+            rtm.set_memory(4.0)
+            rtm.run()
+        ```
+
+    2. Legacy kwargs API (deprecated):
+        ```python
+        rtm = ReverseTimeMigration(
+            observed_u=observed_u, observed_v=observed_v, observed_w=observed_w,
+            source_u=source_u, source_v=source_v, source_w=source_w,
+            receiver_loc=distance, source_loc=source_x, fs=fs, ...
+        )
+        rtm.run()
+        ```
+
+    Parameters (for legacy API)
     ----------
     observed_u : np.ndarray
         Observed velocity data in x-axis (num_receivers, nt)
@@ -122,6 +161,48 @@ class ReverseTimeMigration:
     """
 
     def __init__(self, **kwargs):
+        # Initialize all attributes to None for fluent API
+        self.observed_u = None
+        self.observed_v = None
+        self.observed_w = None
+        self.source_u = None
+        self.source_v = None
+        self.source_w = None
+        self.receiver_loc = None
+        self.receiver_num = None
+        self.source_loc = None
+        self.fs = None
+        self.nt = None
+
+        # Set defaults for optional parameters
+        self.rho = 1500
+        self.poisson = 0.33
+        self.isnap = 216
+        self.absorbing_frame = 50
+        self.vmin = 10.0
+        self.vmax = 500.0
+        self.vstep = 10
+        self.v_fix = None
+        self.total_allocate_memory_gb = 8.0
+        self.receivers_height = None
+
+        # Internal tracking
+        self._fw_instance = None
+        self._bw_instance = None
+        self._run_fields = []  # Track Taichi fields created in run()
+
+        # If kwargs provided, use legacy API
+        if kwargs:
+            warnings.warn(
+                "The kwargs-based constructor is deprecated. "
+                "Please use the fluent API (set_observed_data, set_source, etc.) instead.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            self._init_from_kwargs(kwargs)
+
+    def _init_from_kwargs(self, kwargs):
+        """Initialize from legacy kwargs API."""
         self.observed_u = np.asarray(kwargs['observed_u'], dtype=np.float32)
         self.observed_v = np.asarray(kwargs['observed_v'], dtype=np.float32)
         self.observed_w = np.asarray(kwargs['observed_w'], dtype=np.float32)
@@ -157,14 +238,297 @@ class ReverseTimeMigration:
 
         self._check_parameters()
 
+    # ==================== Context Manager ====================
+
+    def __enter__(self):
+        """Enter context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit context manager and cleanup resources."""
+        self.cleanup()
+        return False
+
+    def cleanup(self, reset_taichi_runtime: bool = True):
+        """
+        Release Taichi fields and internal resources.
+
+        Call this method to free GPU/CPU memory when the RTM instance is no longer
+        needed. This is automatically called when using the context manager.
+
+        Parameters
+        ----------
+        reset_taichi_runtime : bool
+            If True (default), calls ti.reset() to fully release GPU/CPU memory.
+            This is necessary because Taichi fields cannot be individually deallocated.
+            Note: This will clear JIT compilation cache, causing recompilation on
+            the next run. Set to False if you want to preserve JIT cache.
+        """
+        # Cleanup ForwardModeling instance
+        if self._fw_instance is not None:
+            self._fw_instance.cleanup()
+            self._fw_instance = None
+
+        # Cleanup BackwardModeling instance
+        if self._bw_instance is not None:
+            self._bw_instance.cleanup()
+            self._bw_instance = None
+
+        # Clear references to fields created in run()
+        self._run_fields.clear()
+
+        # Reset Taichi runtime to actually release memory
+        # This is the only way to deallocate Taichi fields
+        if reset_taichi_runtime:
+            ti.reset()
+
+    # ==================== Fluent API Methods ====================
+
+    def set_observed_data(self, observed_u, observed_v, observed_w):
+        """
+        Set observed velocity data.
+
+        Parameters
+        ----------
+        observed_u : np.ndarray
+            Observed velocity data in x-axis (num_receivers, nt)
+        observed_v : np.ndarray
+            Observed velocity data in y-axis (num_receivers, nt)
+        observed_w : np.ndarray
+            Observed velocity data in z-axis (num_receivers, nt)
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.observed_u = np.asarray(observed_u, dtype=np.float32)
+        self.observed_v = np.asarray(observed_v, dtype=np.float32)
+        self.observed_w = np.asarray(observed_w, dtype=np.float32)
+        self.nt = self.observed_u.shape[1]
+        return self
+
+    def set_source(self, source_u, source_v, source_w, source_loc):
+        """
+        Set source wavelet and location.
+
+        Parameters
+        ----------
+        source_u : np.ndarray
+            Source wavelet for u component
+        source_v : np.ndarray
+            Source wavelet for v component
+        source_w : np.ndarray
+            Source wavelet for w component
+        source_loc : float
+            Source location (x position in meters)
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.source_u = np.asarray(source_u, dtype=np.float32)
+        self.source_v = np.asarray(source_v, dtype=np.float32)
+        self.source_w = np.asarray(source_w, dtype=np.float32)
+        self.source_loc = float(source_loc)
+        return self
+
+    def set_receivers(self, receiver_loc):
+        """
+        Set receiver locations.
+
+        Parameters
+        ----------
+        receiver_loc : np.ndarray
+            Receiver locations (1D array of x positions in meters)
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.receiver_loc = np.asarray(receiver_loc, dtype=np.float32)
+        self.receiver_num = len(self.receiver_loc)
+        return self
+
+    def set_frequency(self, fs):
+        """
+        Set sampling frequency.
+
+        Parameters
+        ----------
+        fs : float
+            Sampling frequency in Hz
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.fs = float(fs)
+        return self
+
+    def set_velocity_range(self, vmin, vmax, vstep):
+        """
+        Set velocity estimation range.
+
+        Parameters
+        ----------
+        vmin : float
+            Minimum velocity for estimation (m/s)
+        vmax : float
+            Maximum velocity for estimation (m/s)
+        vstep : int
+            Number of velocity steps for estimation
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.vmin = float(vmin)
+        self.vmax = float(vmax)
+        self.vstep = int(vstep)
+        return self
+
+    def fix_velocity(self, velocity):
+        """
+        Set fixed velocity and skip velocity estimation.
+
+        Parameters
+        ----------
+        velocity : float
+            Fixed velocity in m/s
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.v_fix = float(velocity)
+        return self
+
+    def set_boundary(self, absorbing_frame):
+        """
+        Set absorbing boundary width.
+
+        Parameters
+        ----------
+        absorbing_frame : int
+            Width of absorbing boundary in grid points
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.absorbing_frame = int(absorbing_frame)
+        return self
+
+    def set_memory(self, total_allocate_memory_gb):
+        """
+        Set total memory budget for RTM computation.
+
+        Parameters
+        ----------
+        total_allocate_memory_gb : float
+            Total memory budget in GB
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.total_allocate_memory_gb = float(total_allocate_memory_gb)
+        return self
+
+    def set_density(self, rho):
+        """
+        Set density.
+
+        Parameters
+        ----------
+        rho : float
+            Density in kg/m^3
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.rho = float(rho)
+        return self
+
+    def set_poisson_ratio(self, poisson_ratio):
+        """
+        Set Poisson's ratio.
+
+        Parameters
+        ----------
+        poisson_ratio : float
+            Poisson's ratio (typically 0.25-0.45)
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.poisson = float(poisson_ratio)
+        return self
+
+    def set_topography(self, receivers_height):
+        """
+        Set receiver heights for topography.
+
+        Parameters
+        ----------
+        receivers_height : np.ndarray
+            Height of receivers (1D array matching receiver count)
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.receivers_height = np.asarray(receivers_height, dtype=np.float32)
+        self.receivers_height = self.receivers_height - np.max(self.receivers_height)
+        return self
+
     def _check_parameters(self):
         """Validate input parameters."""
+        # Check required parameters are set with helpful error messages
+        if self.observed_u is None or self.observed_v is None or self.observed_w is None:
+            raise ValueError(
+                'Observed data must be provided. '
+                'Use set_observed_data(observed_u, observed_v, observed_w) to set it.'
+            )
+        if self.source_u is None or self.source_v is None or self.source_w is None:
+            raise ValueError(
+                'Source functions must be provided. '
+                'Use set_source(source_u, source_v, source_w, source_loc) to set them.'
+            )
+        if self.receiver_loc is None:
+            raise ValueError(
+                'Receiver locations must be provided. '
+                'Use set_receivers(receiver_loc) to set them.'
+            )
+        if self.source_loc is None:
+            raise ValueError(
+                'Source location must be provided. '
+                'Use set_source(source_u, source_v, source_w, source_loc) to set it.'
+            )
+        if self.fs is None:
+            raise ValueError(
+                'Sampling frequency must be provided. '
+                'Use set_frequency(fs) to set it.'
+            )
+
+        # Check data shapes
         if self.observed_u.shape != self.observed_v.shape or self.observed_u.shape != self.observed_w.shape:
             raise ValueError('Observed data shapes must match')
         if self.source_u.shape != self.source_v.shape or self.source_u.shape != self.source_w.shape:
             raise ValueError('Source function shapes must match')
-        if self.receiver_loc is None:
-            raise ValueError('Receiver locations must be provided')
         if self.fs <= 0:
             raise ValueError('Sampling frequency must be positive')
         if self.receivers_height is not None:
@@ -175,7 +539,7 @@ class ReverseTimeMigration:
                           vstep: int = 10) -> float:
         """
         Estimate velocity using cross-correlation method.
-        
+
         Parameters
         ----------
         array : np.ndarray
@@ -186,7 +550,7 @@ class ReverseTimeMigration:
             Maximum velocity
         vstep : int
             Number of velocity steps
-            
+
         Returns
         -------
         float
@@ -427,7 +791,15 @@ class ReverseTimeMigration:
             Imaging condition method
         display_callback : callable, optional
             Callback for displaying wavefield during simulation
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
         """
+        # Validate required parameters
+        self._check_parameters()
+
         if self.v_fix is not None:
             print(f'Using fixed velocity: {self.v_fix} m/s')
             estimated_v = self.v_fix
@@ -468,12 +840,14 @@ class ReverseTimeMigration:
             mu_field.from_numpy(mu_np)
             lam_field.from_numpy(lam_np)
             rho_field_input.from_numpy(rho)
+            self._run_fields.extend([mu_field, lam_field, rho_field_input])
 
             # Create location fields
             src_loc_field = ti.field(dtype=ti.i32, shape=(num_sources, 2))
             recv_loc_field = ti.field(dtype=ti.i32, shape=(num_receivers, 2))
             src_loc_field.from_numpy(np.array(src_loc_step, dtype=np.int32))
             recv_loc_field.from_numpy(np.array(receiver_loc_step, dtype=np.int32))
+            self._run_fields.extend([src_loc_field, recv_loc_field])
 
             # Create wavelet fields
             wavelet_u_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
@@ -482,12 +856,14 @@ class ReverseTimeMigration:
             wavelet_u_field.from_numpy(np.asarray(wavelet_u, dtype=np.float32))
             wavelet_v_field.from_numpy(np.asarray(wavelet_v, dtype=np.float32))
             wavelet_w_field.from_numpy(np.asarray(wavelet_w, dtype=np.float32))
+            self._run_fields.extend([wavelet_u_field, wavelet_v_field, wavelet_w_field])
 
             # Create surface matrix field (optional)
             surface_matrix_field = None
             if surface_matrix is not None:
                 surface_matrix_field = ti.field(dtype=ti.f32, shape=(nx, nz))
                 surface_matrix_field.from_numpy(np.asarray(surface_matrix, dtype=np.float32))
+                self._run_fields.append(surface_matrix_field)
 
             fw = ForwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
@@ -504,10 +880,17 @@ class ReverseTimeMigration:
                 num_receivers=num_receivers
             )
 
+            # Track for cleanup
+            self._fw_instance = fw
+
             flag = fw.run(save=True, display_callback=display_callback)
 
             if flag:
                 print(f'Forward modeling failed with flag {flag}, reducing CFL...')
+                # Cleanup failed forward modeling
+                if self._fw_instance is not None:
+                    self._fw_instance.cleanup()
+                    self._fw_instance = None
                 continue
 
             print('Forward modeling completed successfully.')
@@ -519,6 +902,7 @@ class ReverseTimeMigration:
             obsdata_u_field.from_numpy(self.observed_u)
             obsdata_v_field.from_numpy(self.observed_v)
             obsdata_w_field.from_numpy(self.observed_w)
+            self._run_fields.extend([obsdata_u_field, obsdata_v_field, obsdata_w_field])
 
             bw = BackwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
@@ -534,6 +918,9 @@ class ReverseTimeMigration:
                 num_receivers=num_receivers
             )
 
+            # Track for cleanup
+            self._bw_instance = bw
+
             flag = bw.run_calc(
                 import_fwdata_u=fw.u_save_field,
                 import_fwdata_v=fw.v_save_field,
@@ -547,6 +934,13 @@ class ReverseTimeMigration:
 
             if flag:
                 print(f'Backward modeling failed with flag {flag}, reducing CFL...')
+                # Cleanup failed backward modeling
+                if self._bw_instance is not None:
+                    self._bw_instance.cleanup()
+                    self._bw_instance = None
+                if self._fw_instance is not None:
+                    self._fw_instance.cleanup()
+                    self._fw_instance = None
                 continue
 
             print('Backward modeling completed successfully.')
@@ -565,10 +959,12 @@ class ReverseTimeMigration:
         self.CFL = CFL
         self.src_loc_step = src_loc_step
 
+        return self
+
     def save_result(self, directory: str, savename: str):
         """
         Save RTM results to npz file.
-        
+
         Parameters
         ----------
         directory : str
@@ -609,7 +1005,7 @@ class ReverseTimeMigration:
     def get_results(self) -> tuple:
         """
         Get RTM imaging results.
-        
+
         Returns
         -------
         tuple
@@ -620,7 +1016,7 @@ class ReverseTimeMigration:
     def get_axes_extent(self) -> dict:
         """
         Get axes extent for plotting.
-        
+
         Returns
         -------
         dict
