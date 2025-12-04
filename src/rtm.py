@@ -493,6 +493,7 @@ class ReverseTimeMigration:
                 import_fwdata_w=fw.w_save_field,
                 isnaps_field=fw.isnaps_field,
                 num_snaps=fw.num_snaps,
+                isnap_interval=isnap,
                 method=method,
                 display_callback=display_callback
             )
