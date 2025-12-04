@@ -71,7 +71,7 @@ def init_taichi(backend: str = 'cpu', **kwargs):
 
     # Build init arguments
     init_kwargs = {'arch': arch, **kwargs}
-    
+
     ti.init(**init_kwargs)
 
 
@@ -293,18 +293,24 @@ class ReverseTimeMigration:
         
         This function calculates the optimal snapshot interval to maximize
         memory usage while staying within the total_allocate_memory_gb budget.
-        A smaller isnap means more snapshots and better imaging quality at the 
+        A smaller isnap means more snapshots and better imaging quality at the
         cost of more memory.
-        
-        Memory allocation during RTM run:
-        1. Input fields (shared): mu, lam, rho, src_loc, recv_loc, wavelets, surface_matrix
-        2. ForwardModeling: grid fields (14) + seismograms
-        3. Snapshot storage: u_save, v_save, w_save, isnaps (3*nx*nz*num_snaps + num_snaps)
-        4. Observed data fields: obsdata_u, obsdata_v, obsdata_w
-        5. BackwardModeling: grid fields (17) + synthetic source
-        
-        During backward modeling, forward snapshots still exist in memory.
-        
+
+        Memory allocation during RTM run (optimized):
+        Phase 1 (Forward modeling):
+            - Input fields (shared): mu, lam, rho, src_loc, recv_loc, wavelets, surface_matrix
+            - ForwardModeling: grid fields (14) + seismograms
+            - Snapshot storage: u_save, v_save, w_save, isnaps (3*nx*nz*num_snaps + num_snaps)
+
+        Phase 2 (Backward modeling - after ForwardModeling is deleted):
+            - Input fields (shared): reused from phase 1
+            - Snapshot storage: kept from phase 1 for correlation
+            - Observed data fields: obsdata_u, obsdata_v, obsdata_w
+            - BackwardModeling: grid fields (17) + synthetic source
+
+        Peak memory is now max(Phase1, Phase2) instead of Phase1 + Phase2.
+        ForwardModeling is deleted after extracting snapshots to free memory.
+
         Parameters
         ----------
         nx : int
@@ -333,17 +339,17 @@ class ReverseTimeMigration:
         # === Input fields allocated in run() before ForwardModeling ===
         # Material fields: mu_field, lam_field, rho_field_input = 3 fields
         input_material_memory = 3 * nx * nz * dtype_size
-        
+
         # Location fields: src_loc_field, recv_loc_field (int32)
         input_location_memory = (num_sources * 2 + num_receivers * 2) * int_size
-        
+
         # Wavelet fields: wavelet_u_field, wavelet_v_field, wavelet_w_field
         input_wavelet_memory = 3 * num_sources * nt * dtype_size
-        
+
         # Surface matrix field (optional, assume allocated)
         input_surface_memory = nx * nz * dtype_size
-        
-        total_input_memory = (input_material_memory + input_location_memory + 
+
+        total_input_memory = (input_material_memory + input_location_memory +
                               input_wavelet_memory + input_surface_memory)
 
         # === ForwardModeling memory ===
@@ -354,11 +360,6 @@ class ReverseTimeMigration:
 
         # === BackwardModeling memory ===
         bw_memory = BackwardModeling.estimate_memory_bytes(nx, nz, nt, num_sources, num_receivers)
-
-        # === Fixed memory (always allocated regardless of snapshots) ===
-        # During backward modeling: input fields + fw_memory + observed_data + bw_memory + snapshots
-        # This is the peak memory usage
-        fixed_memory = total_input_memory + fw_memory + observed_data_memory + bw_memory
 
         # === Memory per snapshot ===
         # u_save_field, v_save_field, w_save_field (each nx*nz*num_snaps)
@@ -371,6 +372,16 @@ class ReverseTimeMigration:
 
         # Memory margin (5% of total for safety)
         memory_margin = int(total_memory_bytes * 0.05)
+
+        # === Peak memory calculation (optimized) ===
+        # Phase 1: input + ForwardModeling + snapshots
+        # Phase 2: input + snapshots + observed_data + BackwardModeling
+        # ForwardModeling is deleted before BackwardModeling starts, so we take max()
+        phase1_fixed = total_input_memory + fw_memory
+        phase2_fixed = total_input_memory + observed_data_memory + bw_memory
+
+        # Peak fixed memory is the maximum of the two phases
+        fixed_memory = max(phase1_fixed, phase2_fixed)
 
         # Available memory for snapshots
         available_for_snapshots = total_memory_bytes - fixed_memory - base_overhead - memory_margin
@@ -392,16 +403,18 @@ class ReverseTimeMigration:
         # Calculate actual memory usage for logging
         actual_snapshots = nt // isnap
         actual_snapshot_memory = actual_snapshots * (bytes_per_snapshot + isnaps_overhead_per_snap)
-        total_estimated_memory = fixed_memory + actual_snapshot_memory + base_overhead
-        
-        print(f"Memory estimate (detailed):")
+        phase1_total = phase1_fixed + actual_snapshot_memory + base_overhead
+        phase2_total = phase2_fixed + actual_snapshot_memory + base_overhead
+
+        print("Memory estimate (optimized - sequential phases):")
         print(f"  Input fields: {total_input_memory / (1024**2):.1f} MiB")
-        print(f"  ForwardModeling: {fw_memory / (1024**2):.1f} MiB")
-        print(f"  Observed data: {observed_data_memory / (1024**2):.1f} MiB")
-        print(f"  BackwardModeling: {bw_memory / (1024**2):.1f} MiB")
+        print(f"  Phase 1 (Forward): {phase1_fixed / (1024**2):.1f} MiB + snapshots")
+        print(f"  Phase 2 (Backward): {phase2_fixed / (1024**2):.1f} MiB + snapshots")
         print(f"  Snapshots ({actual_snapshots}): {actual_snapshot_memory / (1024**2):.1f} MiB")
         print(f"  Base overhead: {base_overhead / (1024**2):.1f} MiB")
-        print(f"  Total estimated: {total_estimated_memory / (1024**2):.1f} MiB / {total_memory_bytes / (1024**2):.1f} MiB budget")
+        print(f"  Peak Phase 1: {phase1_total / (1024**2):.1f} MiB")
+        print(f"  Peak Phase 2: {phase2_total / (1024**2):.1f} MiB")
+        print(f"  Total budget: {total_memory_bytes / (1024**2):.1f} MiB")
         print(f"  Snapshot interval: isnap={isnap}")
 
         return isnap
@@ -506,6 +519,18 @@ class ReverseTimeMigration:
 
             print('Forward modeling completed successfully.')
 
+            # Extract snapshot data from ForwardModeling before deleting it
+            # These fields are needed for cross-correlation in BackwardModeling
+            fw_u_save_field = fw.u_save_field
+            fw_v_save_field = fw.v_save_field
+            fw_w_save_field = fw.w_save_field
+            fw_isnaps_field = fw.isnaps_field
+            fw_num_snaps = fw.num_snaps
+
+            # Delete ForwardModeling to free memory before creating BackwardModeling
+            # This reduces peak memory usage from (FW + BW) to max(FW, BW)
+            del fw
+
             # Create observed data fields for BackwardModeling
             obsdata_u_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
             obsdata_v_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
@@ -529,11 +554,11 @@ class ReverseTimeMigration:
             )
 
             flag = bw.run_calc(
-                import_fwdata_u=fw.u_save_field,
-                import_fwdata_v=fw.v_save_field,
-                import_fwdata_w=fw.w_save_field,
-                isnaps_field=fw.isnaps_field,
-                num_snaps=fw.num_snaps,
+                import_fwdata_u=fw_u_save_field,
+                import_fwdata_v=fw_v_save_field,
+                import_fwdata_w=fw_w_save_field,
+                isnaps_field=fw_isnaps_field,
+                num_snaps=fw_num_snaps,
                 isnap_interval=isnap,
                 method=method,
                 display_callback=display_callback
