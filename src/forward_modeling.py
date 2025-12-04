@@ -32,9 +32,9 @@ import taichi as ti
 class ForwardModeling:
     """
     Forward modeling for seismic wave propagation.
-    
+
     All input data must be provided as Taichi fields.
-    
+
     Parameters
     ----------
     nx : int
@@ -81,9 +81,9 @@ class ForwardModeling:
     def estimate_memory_bytes(nx: int, nz: int, nt: int, num_sources: int, num_receivers: int) -> int:
         """
         Estimate the memory usage of ForwardModeling in bytes.
-        
+
         This provides an accurate calculation for memory budgeting.
-        
+
         Parameters
         ----------
         nx : int
@@ -96,7 +96,7 @@ class ForwardModeling:
             Number of sources
         num_receivers : int
             Number of receivers
-            
+
         Returns
         -------
         int
@@ -367,7 +367,7 @@ class ForwardModeling:
     def _check_finite(self) -> ti.i32:
         """
         Check if all fields are finite - parallelized with atomic operations.
-        
+
         Uses u_val != u_val pattern for NaN detection (standard IEEE-754 trick)
         and magnitude check for overflow detection.
         """
@@ -405,7 +405,7 @@ class ForwardModeling:
             stability_check_interval: int = 100) -> int:
         """
         Run forward modeling.
-        
+
         Parameters
         ----------
         save : bool
@@ -416,7 +416,7 @@ class ForwardModeling:
         stability_check_interval : int
             How often to check for numerical stability (default: every 100 steps).
             Higher values improve GPU utilization but may miss instability earlier.
-            
+
         Returns
         -------
         int
@@ -479,3 +479,61 @@ class ForwardModeling:
             self.seismogram_v.to_numpy(),
             self.seismogram_w.to_numpy()
         )
+
+    def cleanup(self):
+        """
+        Release Taichi fields to free GPU/CPU memory.
+
+        Call this method when the ForwardModeling instance is no longer needed
+        to allow garbage collection of Taichi fields.
+        """
+        # Set field references to None to allow GC
+        # Stress fields
+        self.sxx = None
+        self.sxz = None
+        self.szz = None
+        self.syx = None
+        self.syz = None
+
+        # Velocity fields
+        self.u = None
+        self.v = None
+        self.w = None
+
+        # Averaged material fields
+        self.mxz = None
+        self.myx = None
+        self.myz = None
+
+        # Averaged density fields
+        self.rho_u = None
+        self.rho_w = None
+
+        # Absorbing boundary coefficients
+        self.absorb_coeff = None
+
+        # Seismograms
+        self.seismogram_u = None
+        self.seismogram_v = None
+        self.seismogram_w = None
+
+        # Snapshot fields (if created)
+        if hasattr(self, 'u_save_field'):
+            self.u_save_field = None
+        if hasattr(self, 'v_save_field'):
+            self.v_save_field = None
+        if hasattr(self, 'w_save_field'):
+            self.w_save_field = None
+        if hasattr(self, 'isnaps_field'):
+            self.isnaps_field = None
+
+        # Input field references (don't delete, just clear reference)
+        self.src_loc_field = None
+        self.recv_loc_field = None
+        self.wavelet_u_field = None
+        self.wavelet_v_field = None
+        self.wavelet_w_field = None
+        self.surface_matrix = None
+        self.mu = None
+        self.lam = None
+        self.rho_field = None
