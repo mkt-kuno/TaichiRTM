@@ -134,10 +134,49 @@ See `examples/example.py` for details.
 Call the RTM core functions. The wave is propagated forward and backward, and imaging results are generated according to the imaging conditions (e.g., cross-correlation).
 
 ### 4. Visualization
-The library provides imaging utilities without matplotlib dependency in core modules. For visualization, you can:
-- Use the provided callback functions with matplotlib
-- Implement your own visualization using any library
-- Load the saved npz results and visualize separately
+The library provides multiple visualization options:
+
+#### Option 1: Taichi GGUI (No external dependencies)
+Use the built-in Taichi GGUI for visualization without matplotlib:
+
+```python
+from src import RTMViewer, create_visualization_data, create_realtime_callback
+
+# Get visualization data
+vis_data = create_visualization_data(rtm_instance)
+
+# Interactive viewer with component switching (1/2/3 keys for U/V/W)
+viewer = RTMViewer(800, 600, "RTM Results")
+viewer.show_all_components(vis_data, cmap='gray')
+viewer.close()
+
+# Or display a single component
+viewer.show_rtm_result(vis_data, component='w', cmap='seismic')
+```
+
+Real-time visualization during computation:
+```python
+from src import RTMViewer, create_realtime_callback
+
+# Create real-time callback
+viewer = RTMViewer(800, 600, "Forward Modeling")
+callback = create_realtime_callback(viewer, component='w', cmap='seismic')
+
+# Run RTM with real-time display
+rtm.run(display_callback=callback)
+viewer.close()
+```
+
+Save results without matplotlib:
+```python
+from src import save_image_numpy
+
+# Save as numpy file (can be loaded later for visualization)
+save_image_numpy(vis_data['w'], 'output/result', cmap='gray')
+```
+
+#### Option 2: matplotlib (Optional dependency)
+For publication-quality figures, use matplotlib:
 
 ```python
 from src import create_visualization_data
@@ -145,11 +184,23 @@ from src import create_visualization_data
 # Get visualization-ready data
 vis_data = create_visualization_data(rtm_instance)
 
-# Use with matplotlib or any other library
+# Use with matplotlib
 import matplotlib.pyplot as plt
 plt.imshow(vis_data['u'], extent=vis_data['extent'], cmap='gray')
 plt.show()
 ```
+
+#### GGUI vs matplotlib: When to use which?
+
+| Feature | GGUI | matplotlib |
+|---------|------|------------|
+| Dependencies | None (uses Taichi) | Requires matplotlib |
+| Real-time display | ✅ Excellent | ⚠️ Slow |
+| Interactive | ✅ Keyboard control | ⚠️ Limited |
+| Publication figures | ⚠️ Basic | ✅ Excellent |
+| Headless servers | ⚠️ Requires display | ✅ Can save to file |
+
+See `examples/example_ggui.py` for a complete GGUI demonstration.
 
 ## API Reference
 
@@ -165,6 +216,15 @@ plt.show()
 - `load_rtm_results(directory)`: Load RTM results from directory
 - `stack_rtm_images(results)`: Stack multiple RTM images
 - `create_visualization_data(rtm)`: Prepare data for visualization
+
+### Visualization Classes (GGUI)
+
+- `RTMViewer`: Taichi GGUI-based viewer for RTM results
+  - `show_image(data, cmap)`: Display 2D image
+  - `show_rtm_result(vis_data, component)`: Display RTM result
+  - `show_all_components(vis_data)`: Interactive U/V/W component viewer
+- `create_realtime_callback(viewer, component)`: Create callback for real-time display
+- `save_image_numpy(data, filepath)`: Save image data without matplotlib
 
 ## Coordinate System
 
