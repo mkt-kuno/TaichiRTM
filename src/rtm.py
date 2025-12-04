@@ -374,7 +374,7 @@ class ReverseTimeMigration:
         # - Input fields (shared between phases)
         # - ForwardModeling (Phase 1)
         # - Observed data + BackwardModeling (Phase 2)
-        # Base + Phase1 + Phase2 + Snapshot must not exceed total_allocate_memory_gb
+        # fixed_memory + Snapshots must not exceed total_allocate_memory_gb
         fixed_memory = base_overhead + total_input_memory + fw_memory + observed_data_memory + bw_memory
 
         # Available memory for snapshots
