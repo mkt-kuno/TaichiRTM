@@ -37,6 +37,9 @@ import os
 from .forward_modeling import ForwardModeling
 from .backward_modeling import BackwardModeling
 
+# Module-level variable to store device memory setting from init_taichi
+_device_memory_GB = 8.0
+
 
 def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8.0, default_fp=None, **kwargs):
     """
@@ -53,6 +56,9 @@ def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8.0, default_fp=
     **kwargs
         Additional arguments passed to ti.init()
     """
+    global _device_memory_GB
+    _device_memory_GB = device_memory_GB
+    
     arch_map = {
         'cpu': ti.cpu,
         'gpu': ti.gpu,
@@ -291,22 +297,17 @@ class ReverseTimeMigration:
             
         return receiver_loc_step, src_loc_step, surface_matrix
         
-    def _compute_isnap(self, total_memory: int, memory_margin: int, 
-                       nx: int, nz: int, nt: int) -> int:
+    def _compute_isnap(self, nx: int, nz: int, nt: int) -> int:
         """
-        Compute snapshot interval based on available memory.
+        Compute snapshot interval based on available device memory.
         
         This function calculates the optimal snapshot interval to maximize
-        memory usage while staying within the available memory budget.
-        A smaller isnap means more snapshots and better imaging quality
-        at the cost of more memory.
+        memory usage while staying within the device_memory_GB budget set
+        in init_taichi(). A smaller isnap means more snapshots and better 
+        imaging quality at the cost of more memory.
         
         Parameters
         ----------
-        total_memory : int
-            Total available memory in MiB
-        memory_margin : int
-            Memory margin in MiB
         nx : int
             Grid size in x direction
         nz : int
@@ -319,31 +320,42 @@ class ReverseTimeMigration:
         int
             Snapshot interval (minimum 1)
         """
+        global _device_memory_GB
+        
         dtype_size = 4  # float32 bytes
         num_components = 3  # u, v, w velocity components
+        
+        # Total available memory from init_taichi (in bytes)
+        total_memory_bytes = int(_device_memory_GB * 1024 * 1024 * 1024)
         
         # Calculate memory per snapshot in bytes
         bytes_per_snapshot = nx * nz * dtype_size * num_components
         
-        # Available memory for snapshots (in bytes)
         # Reserve memory for stress fields, velocity fields, and other data structures
         # Each field is nx*nz*float32, we have about 20 fields total (stress, velocity, material, etc.)
-        num_fields = 20
+        # ForwardModeling and BackwardModeling each have ~15-20 fields
+        num_fields = 40  # Conservative estimate for both forward and backward
         field_memory = num_fields * nx * nz * dtype_size
         
         # Account for observed data and source wavelets
         # observed: num_receivers * nt * 3 * 4 bytes
         # source: num_sources * nt * 3 * 4 bytes  
-        # Estimate conservatively with 100 receivers and 3 sources
-        data_memory = (100 + 3) * nt * num_components * dtype_size
+        # Use actual receiver/source counts
+        num_receivers = self.receiver_num
+        num_sources = 1  # Typically 1 source
+        data_memory = (num_receivers + num_sources) * nt * num_components * dtype_size
         
-        # Base memory overhead (Taichi, Python, etc.) - roughly 500MB
+        # Base memory overhead (Taichi runtime, Python, etc.) - roughly 500MB
         base_overhead = 500 * 1024 * 1024
         
-        allowed_memory = (total_memory - memory_margin) * 1024 * 1024 - field_memory - data_memory - base_overhead
+        # Memory margin (10% of total)
+        memory_margin = int(total_memory_bytes * 0.1)
+        
+        # Available memory for snapshots
+        allowed_memory = total_memory_bytes - memory_margin - field_memory - data_memory - base_overhead
         
         if allowed_memory <= 0:
-            print(f"Warning: Very limited memory available, using minimum snapshots")
+            print(f"Warning: Very limited memory available ({_device_memory_GB:.1f} GB), using minimum snapshots")
             return nt  # Minimum snapshots
             
         max_snapshots = allowed_memory // bytes_per_snapshot
@@ -358,24 +370,23 @@ class ReverseTimeMigration:
         # Calculate actual memory usage for logging
         actual_snapshots = nt // isnap
         actual_memory_mb = (actual_snapshots * bytes_per_snapshot) / (1024 * 1024)
-        print(f"Snapshot settings: isnap={isnap}, num_snapshots={actual_snapshots}, snapshot_memory={actual_memory_mb:.0f} MiB")
+        total_memory_mb = _device_memory_GB * 1024
+        print(f"Snapshot settings: isnap={isnap}, num_snapshots={actual_snapshots}, "
+              f"snapshot_memory={actual_memory_mb:.0f} MiB / {total_memory_mb:.0f} MiB device memory")
         
         return isnap
         
     def run(self, 
-            total_memory: int = 8000,
-            memory_margin: int = 500,
             method: str = 'cross_correlation',
             display_callback: Optional[Callable] = None):
         """
         Run Reverse Time Migration.
         
+        Memory allocation for snapshots is automatically computed based on the
+        device_memory_GB setting from init_taichi().
+        
         Parameters
         ----------
-        total_memory : int
-            Total available memory in MiB (default: 8000)
-        memory_margin : int
-            Memory margin in MiB (default: 500)
         method : str
             Imaging condition method
         display_callback : callable, optional
@@ -401,7 +412,7 @@ class ReverseTimeMigration:
             receiver_loc_step, src_loc_step, surface_matrix = self._setup_surface_and_locations(
                 nx, nz, dx, dz, absorbing_frame)
             
-            isnap = self._compute_isnap(total_memory, memory_margin, nx, nz, self.nt)
+            isnap = self._compute_isnap(nx, nz, self.nt)
             
             wavelet_u = self.source_u.reshape(1, -1) if self.source_u.ndim == 1 else self.source_u
             wavelet_v = self.source_v.reshape(1, -1) if self.source_v.ndim == 1 else self.source_v
