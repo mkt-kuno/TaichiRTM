@@ -34,6 +34,7 @@ from .imaging import (
 from .rtm import (
     ReverseTimeMigration,
     init_taichi,
+    reset_taichi,
 )
 
 __version__ = '2.0.0'
@@ -42,6 +43,7 @@ __author__ = 'Yutaro Hara'
 __all__ = [
     'ReverseTimeMigration',
     'init_taichi',
+    'reset_taichi',
     'ForwardModeling',
     'BackwardModeling',
     'load_rtm_results',
