@@ -33,115 +33,15 @@ import taichi as ti
 import numpy as np
 from typing import Optional, Callable
 import os
-import subprocess
 
 from .forward_modeling import ForwardModeling
 from .backward_modeling import BackwardModeling
 
-
-def get_system_memory_mb() -> int:
-    """
-    Get total system memory in MiB using cross-platform methods.
-    
-    Returns
-    -------
-    int
-        Total system memory in MiB
-    """
-    try:
-        # Try reading from /proc/meminfo (Linux)
-        with open('/proc/meminfo', 'r') as f:
-            for line in f:
-                if line.startswith('MemTotal:'):
-                    # Line format: "MemTotal:       16345712 kB"
-                    parts = line.split()
-                    mem_kb = int(parts[1])
-                    return mem_kb // 1024
-    except (FileNotFoundError, PermissionError, ValueError):
-        pass
-    
-    try:
-        # Fallback: use 'free' command (Linux)
-        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            lines = result.stdout.strip().split('\n')
-            for line in lines:
-                if line.startswith('Mem:'):
-                    parts = line.split()
-                    return int(parts[1])
-    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
-        pass
-    
-    # Default fallback: assume 8GB
-    return 8000
+# Module-level variable to store device memory setting from init_taichi
+_device_memory_GB = 8.0
 
 
-def get_available_memory_mb() -> int:
-    """
-    Get available system memory in MiB.
-    
-    Returns
-    -------
-    int
-        Available system memory in MiB
-    """
-    try:
-        # Try reading from /proc/meminfo (Linux)
-        with open('/proc/meminfo', 'r') as f:
-            for line in f:
-                if line.startswith('MemAvailable:'):
-                    parts = line.split()
-                    mem_kb = int(parts[1])
-                    return mem_kb // 1024
-    except (FileNotFoundError, PermissionError, ValueError):
-        pass
-    
-    try:
-        # Fallback: use 'free' command (Linux)
-        result = subprocess.run(['free', '-m'], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            lines = result.stdout.strip().split('\n')
-            for line in lines:
-                if line.startswith('Mem:'):
-                    parts = line.split()
-                    return int(parts[6])  # 'available' column
-    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, IndexError):
-        pass
-    
-    # Default fallback: assume 4GB available
-    return 4000
-
-
-def calculate_optimal_memory_params(target_usage_ratio: float = 0.8) -> tuple:
-    """
-    Calculate optimal memory parameters for RTM processing.
-    
-    Parameters
-    ----------
-    target_usage_ratio : float
-        Target ratio of available memory to use (default: 0.8 = 80%)
-        
-    Returns
-    -------
-    tuple
-        (total_memory_mb, memory_margin_mb) for RTM.run()
-    """
-    available_mb = get_available_memory_mb()
-    total_mb = get_system_memory_mb()
-    
-    # Use target_usage_ratio of available memory
-    target_memory = int(available_mb * target_usage_ratio)
-    
-    # Memory margin should be at least 500MB, or 10% of target
-    memory_margin = max(500, int(target_memory * 0.1))
-    
-    print(f"System memory: {total_mb} MiB total, {available_mb} MiB available")
-    print(f"Target memory usage: {target_memory} MiB ({target_usage_ratio*100:.0f}% of available)")
-    
-    return target_memory, memory_margin
-
-
-def init_taichi(backend: str = 'cpu', **kwargs):
+def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8.0, default_fp=None, **kwargs):
     """
     Initialize Taichi with specified backend.
     
@@ -149,9 +49,16 @@ def init_taichi(backend: str = 'cpu', **kwargs):
     ----------
     backend : str
         Backend to use: 'cpu', 'gpu', 'cuda', 'vulkan', 'opengl', 'metal'
+    device_memory_GB : float
+        Device memory allocation in GB (default: 8.0)
+    default_fp : optional
+        Default floating-point type. If ti.f64, fast_math is disabled.
     **kwargs
         Additional arguments passed to ti.init()
     """
+    global _device_memory_GB
+    _device_memory_GB = device_memory_GB
+    
     arch_map = {
         'cpu': ti.cpu,
         'gpu': ti.gpu,
@@ -162,7 +69,24 @@ def init_taichi(backend: str = 'cpu', **kwargs):
     }
     
     arch = arch_map.get(backend.lower(), ti.cpu)
-    ti.init(arch=arch, **kwargs)
+    
+    # Set defaults for advanced_optimization and fast_math
+    if 'advanced_optimization' not in kwargs:
+        kwargs['advanced_optimization'] = True
+    
+    # fast_math should be OFF when ti.f64 is specified
+    if 'fast_math' not in kwargs:
+        if default_fp is not None and default_fp is ti.f64:
+            kwargs['fast_math'] = False
+        else:
+            kwargs['fast_math'] = True
+    
+    # Build init arguments
+    init_kwargs = {'arch': arch, 'device_memory_GB': device_memory_GB, **kwargs}
+    if default_fp is not None:
+        init_kwargs['default_fp'] = default_fp
+    
+    ti.init(**init_kwargs)
 
 
 class ReverseTimeMigration:
@@ -373,22 +297,17 @@ class ReverseTimeMigration:
             
         return receiver_loc_step, src_loc_step, surface_matrix
         
-    def _compute_isnap(self, total_memory: int, memory_margin: int, 
-                       nx: int, nz: int, nt: int) -> int:
+    def _compute_isnap(self, nx: int, nz: int, nt: int) -> int:
         """
-        Compute snapshot interval based on available memory.
+        Compute snapshot interval based on available device memory.
         
         This function calculates the optimal snapshot interval to maximize
-        memory usage while staying within the available memory budget.
-        A smaller isnap means more snapshots and better imaging quality
-        at the cost of more memory.
+        memory usage while staying within the device_memory_GB budget set
+        in init_taichi(). A smaller isnap means more snapshots and better 
+        imaging quality at the cost of more memory.
         
         Parameters
         ----------
-        total_memory : int
-            Total available memory in MiB
-        memory_margin : int
-            Memory margin in MiB
         nx : int
             Grid size in x direction
         nz : int
@@ -401,31 +320,42 @@ class ReverseTimeMigration:
         int
             Snapshot interval (minimum 1)
         """
+        global _device_memory_GB
+        
         dtype_size = 4  # float32 bytes
         num_components = 3  # u, v, w velocity components
+        
+        # Total available memory from init_taichi (in bytes)
+        total_memory_bytes = int(_device_memory_GB * 1024 * 1024 * 1024)
         
         # Calculate memory per snapshot in bytes
         bytes_per_snapshot = nx * nz * dtype_size * num_components
         
-        # Available memory for snapshots (in bytes)
         # Reserve memory for stress fields, velocity fields, and other data structures
         # Each field is nx*nz*float32, we have about 20 fields total (stress, velocity, material, etc.)
-        num_fields = 20
+        # ForwardModeling and BackwardModeling each have ~15-20 fields
+        num_fields = 40  # Conservative estimate for both forward and backward
         field_memory = num_fields * nx * nz * dtype_size
         
         # Account for observed data and source wavelets
         # observed: num_receivers * nt * 3 * 4 bytes
         # source: num_sources * nt * 3 * 4 bytes  
-        # Estimate conservatively with 100 receivers and 3 sources
-        data_memory = (100 + 3) * nt * num_components * dtype_size
+        # Use actual receiver/source counts
+        num_receivers = self.receiver_num
+        num_sources = 1  # Typically 1 source
+        data_memory = (num_receivers + num_sources) * nt * num_components * dtype_size
         
-        # Base memory overhead (Taichi, Python, etc.) - roughly 500MB
+        # Base memory overhead (Taichi runtime, Python, etc.) - roughly 500MB
         base_overhead = 500 * 1024 * 1024
         
-        allowed_memory = (total_memory - memory_margin) * 1024 * 1024 - field_memory - data_memory - base_overhead
+        # Memory margin (10% of total)
+        memory_margin = int(total_memory_bytes * 0.1)
+        
+        # Available memory for snapshots
+        allowed_memory = total_memory_bytes - memory_margin - field_memory - data_memory - base_overhead
         
         if allowed_memory <= 0:
-            print(f"Warning: Very limited memory available, using minimum snapshots")
+            print(f"Warning: Very limited memory available ({_device_memory_GB:.1f} GB), using minimum snapshots")
             return nt  # Minimum snapshots
             
         max_snapshots = allowed_memory // bytes_per_snapshot
@@ -440,40 +370,28 @@ class ReverseTimeMigration:
         # Calculate actual memory usage for logging
         actual_snapshots = nt // isnap
         actual_memory_mb = (actual_snapshots * bytes_per_snapshot) / (1024 * 1024)
-        print(f"Snapshot settings: isnap={isnap}, num_snapshots={actual_snapshots}, snapshot_memory={actual_memory_mb:.0f} MiB")
+        total_memory_mb = _device_memory_GB * 1024
+        print(f"Snapshot settings: isnap={isnap}, num_snapshots={actual_snapshots}, "
+              f"snapshot_memory={actual_memory_mb:.0f} MiB / {total_memory_mb:.0f} MiB device memory")
         
         return isnap
         
     def run(self, 
-            total_memory: Optional[int] = None,
-            memory_margin: Optional[int] = None,
             method: str = 'cross_correlation',
-            display_callback: Optional[Callable] = None,
-            target_memory_ratio: float = 0.8):
+            display_callback: Optional[Callable] = None):
         """
         Run Reverse Time Migration.
         
+        Memory allocation for snapshots is automatically computed based on the
+        device_memory_GB setting from init_taichi().
+        
         Parameters
         ----------
-        total_memory : int, optional
-            Total available memory in MiB. If None, auto-detect.
-        memory_margin : int, optional
-            Memory margin in MiB. If None, auto-calculate.
         method : str
             Imaging condition method
         display_callback : callable, optional
             Callback for displaying wavefield during simulation
-        target_memory_ratio : float
-            Target ratio of available memory to use when auto-detecting (default: 0.8 = 80%)
         """
-        # Auto-detect memory parameters if not provided
-        if total_memory is None or memory_margin is None:
-            auto_total, auto_margin = calculate_optimal_memory_params(target_memory_ratio)
-            if total_memory is None:
-                total_memory = auto_total
-            if memory_margin is None:
-                memory_margin = auto_margin
-        
         if self.v_fix is not None:
             print(f'Using fixed velocity: {self.v_fix} m/s')
             estimated_v = self.v_fix
@@ -494,23 +412,60 @@ class ReverseTimeMigration:
             receiver_loc_step, src_loc_step, surface_matrix = self._setup_surface_and_locations(
                 nx, nz, dx, dz, absorbing_frame)
             
-            isnap = self._compute_isnap(total_memory, memory_margin, nx, nz, self.nt)
+            isnap = self._compute_isnap(nx, nz, self.nt)
             
             wavelet_u = self.source_u.reshape(1, -1) if self.source_u.ndim == 1 else self.source_u
             wavelet_v = self.source_v.reshape(1, -1) if self.source_v.ndim == 1 else self.source_v
             wavelet_w = self.source_w.reshape(1, -1) if self.source_w.ndim == 1 else self.source_w
             
+            # Prepare all data as Taichi fields for ForwardModeling
+            num_sources = len(src_loc_step)
+            num_receivers = len(receiver_loc_step)
+            
+            # Create material property fields
+            mu_np = rho * vs ** 2
+            lam_np = ((vp / vs) ** 2 - 2) * mu_np
+            
+            mu_field = ti.field(dtype=ti.f32, shape=(nx, nz))
+            lam_field = ti.field(dtype=ti.f32, shape=(nx, nz))
+            rho_field_input = ti.field(dtype=ti.f32, shape=(nx, nz))
+            mu_field.from_numpy(mu_np)
+            lam_field.from_numpy(lam_np)
+            rho_field_input.from_numpy(rho)
+            
+            # Create location fields
+            src_loc_field = ti.field(dtype=ti.i32, shape=(num_sources, 2))
+            recv_loc_field = ti.field(dtype=ti.i32, shape=(num_receivers, 2))
+            src_loc_field.from_numpy(np.array(src_loc_step, dtype=np.int32))
+            recv_loc_field.from_numpy(np.array(receiver_loc_step, dtype=np.int32))
+            
+            # Create wavelet fields
+            wavelet_u_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
+            wavelet_v_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
+            wavelet_w_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
+            wavelet_u_field.from_numpy(np.asarray(wavelet_u, dtype=np.float32))
+            wavelet_v_field.from_numpy(np.asarray(wavelet_v, dtype=np.float32))
+            wavelet_w_field.from_numpy(np.asarray(wavelet_w, dtype=np.float32))
+            
+            # Create surface matrix field (optional)
+            surface_matrix_field = None
+            if surface_matrix is not None:
+                surface_matrix_field = ti.field(dtype=ti.f32, shape=(nx, nz))
+                surface_matrix_field.from_numpy(np.asarray(surface_matrix, dtype=np.float32))
+            
             fw = ForwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
-                vs=vs, vp=vp, rho=rho,
+                mu_field=mu_field, lam_field=lam_field, rho_field=rho_field_input,
                 absorbing_frame=absorbing_frame,
-                src_loc=src_loc_step,
-                wavelet_u=wavelet_u,
-                wavelet_v=wavelet_v,
-                wavelet_w=wavelet_w,
-                receiver_loc=receiver_loc_step,
+                src_loc_field=src_loc_field,
+                wavelet_u_field=wavelet_u_field,
+                wavelet_v_field=wavelet_v_field,
+                wavelet_w_field=wavelet_w_field,
+                recv_loc_field=recv_loc_field,
                 isnap=isnap,
-                surface_matrix=surface_matrix
+                surface_matrix_field=surface_matrix_field,
+                num_sources=num_sources,
+                num_receivers=num_receivers
             )
             
             flag = fw.run(save=True, display_callback=display_callback)
@@ -521,24 +476,35 @@ class ReverseTimeMigration:
                 
             print('Forward modeling completed successfully.')
             
+            # Create observed data fields for BackwardModeling
+            obsdata_u_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
+            obsdata_v_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
+            obsdata_w_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
+            obsdata_u_field.from_numpy(self.observed_u)
+            obsdata_v_field.from_numpy(self.observed_v)
+            obsdata_w_field.from_numpy(self.observed_w)
+            
             bw = BackwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
-                vs=vs, vp=vp, rho=rho,
+                mu_field=mu_field, lam_field=lam_field, rho_field=rho_field_input,
                 absorbing_frame=absorbing_frame,
-                src_loc=src_loc_step,
-                observed_data_u=self.observed_u,
-                observed_data_v=self.observed_v,
-                observed_data_w=self.observed_w,
-                receiver_loc=receiver_loc_step,
-                isnap=fw.isnaps,
-                surface_matrix=surface_matrix
+                src_loc_field=src_loc_field,
+                obsdata_u_field=obsdata_u_field,
+                obsdata_v_field=obsdata_v_field,
+                obsdata_w_field=obsdata_w_field,
+                recv_loc_field=recv_loc_field,
+                surface_matrix_field=surface_matrix_field,
+                num_sources=num_sources,
+                num_receivers=num_receivers
             )
             
             flag = bw.run_calc(
-                import_fwdata_u=fw.u_save,
-                import_fwdata_v=fw.v_save,
-                import_fwdata_w=fw.w_save,
-                isnaps=fw.isnaps,
+                import_fwdata_u=fw.u_save_field,
+                import_fwdata_v=fw.v_save_field,
+                import_fwdata_w=fw.w_save_field,
+                isnaps_field=fw.isnaps_field,
+                num_snaps=fw.num_snaps,
+                isnap_interval=isnap,
                 method=method,
                 display_callback=display_callback
             )
@@ -549,7 +515,7 @@ class ReverseTimeMigration:
                 
             print('Backward modeling completed successfully.')
             
-        print(f'\nSimulation completed.')
+        print('\nSimulation completed.')
         print(f'Estimated velocity: {estimated_v} m/s')
         print(f'CFL: {CFL}')
         print(f'Grid: nx={nx}, nz={nz}, dx={dx:.4f}')

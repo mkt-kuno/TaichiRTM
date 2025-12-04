@@ -24,9 +24,6 @@ using the Taichi programming language.
 from .rtm import (
     ReverseTimeMigration,
     init_taichi,
-    get_system_memory_mb,
-    get_available_memory_mb,
-    calculate_optimal_memory_params,
 )
 from .forward_modeling import ForwardModeling
 from .backward_modeling import BackwardModeling
@@ -45,9 +42,6 @@ __author__ = 'Yutaro Hara'
 __all__ = [
     'ReverseTimeMigration',
     'init_taichi',
-    'get_system_memory_mb',
-    'get_available_memory_mb',
-    'calculate_optimal_memory_params',
     'ForwardModeling',
     'BackwardModeling',
     'load_rtm_results',
