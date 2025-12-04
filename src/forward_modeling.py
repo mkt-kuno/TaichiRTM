@@ -82,8 +82,7 @@ class ForwardModeling:
         """
         Estimate the memory usage of ForwardModeling in bytes.
         
-        This is an approximate calculation for memory budgeting purposes.
-        The actual memory usage may vary slightly.
+        This provides an accurate calculation for memory budgeting.
         
         Parameters
         ----------
@@ -105,24 +104,20 @@ class ForwardModeling:
         """
         dtype_size = 4  # float32 bytes
 
-        # Grid fields: sxx, sxz, szz, syx, syz, u, v, w, mu, lam, mxz, myx, myz,
-        #              rho_field, rho_u, rho_w, absorb_coeff = 17 fields
-        num_grid_fields = 17
+        # Grid fields allocated in _init_fields():
+        # Stress: sxx, sxz, szz, syx, syz = 5 fields
+        # Velocity: u, v, w = 3 fields
+        # Averaged material: mxz, myx, myz = 3 fields
+        # Averaged density: rho_u, rho_w = 2 fields
+        # Absorbing: absorb_coeff = 1 field
+        # Total = 14 fields (mu, lam, rho_field are reused from input)
+        num_grid_fields = 14
         grid_memory = num_grid_fields * nx * nz * dtype_size
 
         # Seismogram fields: seismogram_u, seismogram_v, seismogram_w
         seismogram_memory = 3 * num_receivers * nt * dtype_size
 
-        # Source wavelet fields: wavelet_u_field, wavelet_v_field, wavelet_w_field
-        wavelet_memory = 3 * num_sources * nt * dtype_size
-
-        # Location fields: src_loc_field, recv_loc_field (int32)
-        location_memory = (num_sources * 2 + num_receivers * 2) * 4
-
-        # Surface matrix field (optional, assume it's allocated)
-        surface_memory = nx * nz * dtype_size
-
-        total_memory = grid_memory + seismogram_memory + wavelet_memory + location_memory + surface_memory
+        total_memory = grid_memory + seismogram_memory
 
         return total_memory
 
@@ -169,15 +164,12 @@ class ForwardModeling:
         self.v = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
 
-        # Material property fields
-        self.mu = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
-        self.lam = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        # Averaged material fields (computed from input)
         self.mxz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.myx = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.myz = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
 
-        # Density fields
-        self.rho_field = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
+        # Averaged density fields (computed from input)
         self.rho_u = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
         self.rho_w = ti.field(dtype=ti.f32, shape=(self.nx, self.nz))
 
@@ -191,23 +183,13 @@ class ForwardModeling:
 
     def _init_material_from_fields(self, kwargs):
         """Initialize material properties from input Taichi fields."""
-        # Copy from input fields
-        mu_input = kwargs['mu_field']
-        lam_input = kwargs['lam_field']
-        rho_input = kwargs['rho_field']
-
-        self._copy_field(mu_input, self.mu)
-        self._copy_field(lam_input, self.lam)
-        self._copy_field(rho_input, self.rho_field)
+        # Store references to input fields (no copy needed)
+        self.mu = kwargs['mu_field']
+        self.lam = kwargs['lam_field']
+        self.rho_field = kwargs['rho_field']
 
         self._compute_shear_avg()
         self._compute_rho_avg()
-
-    @ti.kernel
-    def _copy_field(self, src: ti.template(), dst: ti.template()):
-        """Copy one Taichi field to another."""
-        for i, j in dst:
-            dst[i, j] = src[i, j]
 
     @ti.kernel
     def _init_absorbing_kernel(self, FW: ti.i32, a: ti.f32):
