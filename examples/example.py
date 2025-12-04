@@ -47,8 +47,8 @@ def main():
     output_dir = os.path.join(script_dir, 'results')
     os.makedirs(output_dir, exist_ok=True)
     
-    # Process first file for demo
-    for npz_path in npzs_path_list[:1]:
+    # Process all files
+    for npz_path in npzs_path_list:
         print(f"\nProcessing: {os.path.basename(npz_path)}")
         
         npz = np.load(npz_path)
