@@ -36,7 +36,6 @@ from src import (
     ReverseTimeMigration,
     init_taichi,
     create_visualization_data,
-    calculate_optimal_memory_params,
 )
 import glob
 
@@ -129,7 +128,7 @@ def save_result_images(rtm_instance, output_dir: str, name: str):
 def process_single_file(npz_path: str, output_dir: str, 
                         sampling_freq: float, time_to: float, 
                         velocity: float, num_receivers: int,
-                        absorbing_frame: int, target_memory_ratio: float):
+                        absorbing_frame: int):
     """
     Process a single NPZ data file.
     
@@ -149,8 +148,6 @@ def process_single_file(npz_path: str, output_dir: str,
         Number of receivers to use
     absorbing_frame : int
         Width of absorbing boundary
-    target_memory_ratio : float
-        Target ratio of available memory to use (0.0-1.0)
     """
     print(f"\nProcessing: {os.path.basename(npz_path)}")
     
@@ -201,8 +198,8 @@ def process_single_file(npz_path: str, output_dir: str,
         absorbing_frame=absorbing_frame,
     )
     
-    # Run RTM with auto-detected memory parameters
-    rtm.run(target_memory_ratio=target_memory_ratio)
+    # Run RTM
+    rtm.run()
     
     # Save results
     savename = os.path.splitext(os.path.basename(npz_path))[0]
@@ -223,10 +220,6 @@ def main():
     print(f"Initializing Taichi with backend: {backend}")
     init_taichi(backend=backend)
     
-    # Calculate and display optimal memory parameters
-    total_mem, margin = calculate_optimal_memory_params(target_usage_ratio=0.8)
-    print(f"Optimal memory settings: total={total_mem} MiB, margin={margin} MiB")
-    
     # Data directory - use absolute path based on script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(script_dir, 'npz data')
@@ -246,7 +239,6 @@ def main():
     velocity = 120  # m/s
     num_receivers = 60  # Use all 60 receivers
     absorbing_frame = 50  # Standard absorbing frame size
-    target_memory_ratio = 0.8  # Use 80% of available memory
     
     # Output directory
     output_dir = os.path.join(script_dir, 'results')
@@ -264,7 +256,6 @@ def main():
             velocity=velocity,
             num_receivers=num_receivers,
             absorbing_frame=absorbing_frame,
-            target_memory_ratio=target_memory_ratio,
         )
         
     print("\nProcessing complete!")
