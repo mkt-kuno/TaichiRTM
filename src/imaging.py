@@ -19,10 +19,11 @@ Imaging utilities for RTM results.
 Provides functions for loading, processing, and preparing RTM data for visualization.
 """
 
-import numpy as np
-import os
 import glob
-from typing import Callable, Optional, Dict, Any, List
+import os
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 
 def load_rtm_results(directory: str, pattern: str = '*.npz') -> List[Dict[str, Any]]:
@@ -43,17 +44,17 @@ def load_rtm_results(directory: str, pattern: str = '*.npz') -> List[Dict[str, A
     """
     rtm_files = glob.glob(os.path.join(directory, pattern))
     results = []
-    
+
     for filepath in rtm_files:
         data = np.load(filepath)
         result = {key: data[key] for key in data.files}
         result['filepath'] = filepath
         results.append(result)
-        
+
     return results
 
 
-def stack_rtm_images(results: List[Dict[str, Any]], 
+def stack_rtm_images(results: List[Dict[str, Any]],
                      subtract_mean: bool = True) -> Dict[str, np.ndarray]:
     """
     Stack multiple RTM images.
@@ -72,46 +73,46 @@ def stack_rtm_images(results: List[Dict[str, Any]],
     """
     if not results:
         raise ValueError("No results to stack")
-        
+
     u_sum = None
     v_sum = None
     w_sum = None
-    
+
     for i, data in enumerate(results):
         u = data['u']
         v = data['v']
         w = data['w']
-        
+
         if i == 0:
             u_sum = np.zeros_like(u)
             v_sum = np.zeros_like(v)
             w_sum = np.zeros_like(w)
-            
+
         u_sum += u
         v_sum += v
         w_sum += w
-        
+
     umap = u_sum.T
     vmap = v_sum.T
     wmap = w_sum.T
-    
+
     if subtract_mean:
         umap = umap - np.mean(umap)
         vmap = vmap - np.mean(vmap)
         wmap = wmap - np.mean(wmap)
-        
+
     last_data = results[-1]
     offset = float(last_data['offset'])
     dx = float(last_data['dx'])
     dz = float(last_data['dz'])
     nx = int(last_data['nx'])
     nz = int(last_data['nz'])
-    
+
     xmin = -offset
     xmax = dx * nx - offset
     zmin = 0.0
     zmax = dz * nz
-    
+
     return {
         'u': umap,
         'v': vmap,
@@ -146,7 +147,7 @@ def compute_display_limits(data: np.ndarray) -> tuple:
     return -data_max, data_max
 
 
-def prepare_image_data(image: np.ndarray, 
+def prepare_image_data(image: np.ndarray,
                        attenuate_region: Optional[tuple] = None,
                        attenuation_factor: float = 1e-3) -> np.ndarray:
     """
@@ -167,7 +168,7 @@ def prepare_image_data(image: np.ndarray,
         Processed image
     """
     result = image.copy()
-    
+
     if attenuate_region is not None:
         x_start, x_end, z_start, z_end = attenuate_region
         # Bounds checking for safe array slicing
@@ -177,11 +178,11 @@ def prepare_image_data(image: np.ndarray,
         z_end = min(result.shape[1], z_end)
         if x_start < x_end and z_start < z_end:
             result[x_start:x_end, z_start:z_end] *= attenuation_factor
-        
+
     return result
 
 
-def create_visualization_data(rtm_instance, 
+def create_visualization_data(rtm_instance,
                               subtract_mean: bool = True,
                               attenuate_source: bool = True,
                               source_attenuation_radius: int = 10) -> Dict[str, Any]:
@@ -207,31 +208,31 @@ def create_visualization_data(rtm_instance,
     u = rtm_instance.image_u.copy()
     v = rtm_instance.image_v.copy()
     w = rtm_instance.image_w.copy()
-    
+
     if attenuate_source and hasattr(rtm_instance, 'src_loc_step'):
         src = rtm_instance.src_loc_step[0]
         r = source_attenuation_radius
-        
+
         x_start = max(0, src[0] - r)
         x_end = min(u.shape[0], src[0] + r)
         z_start = src[1]
         z_end = min(u.shape[1], src[1] + r)
-        
+
         u[x_start:x_end, z_start:z_end] *= 1e-3
         v[:, z_start:z_end] *= 1e-1
         w[x_start:x_end, z_start:z_end] *= 1e-3
-        
+
     umap = u.T
     vmap = v.T
     wmap = w.T
-    
+
     if subtract_mean:
         umap = umap - np.mean(umap)
         vmap = vmap - np.mean(vmap)
         wmap = wmap - np.mean(wmap)
-        
+
     extent = rtm_instance.get_axes_extent()
-    
+
     return {
         'u': umap,
         'v': vmap,
@@ -247,7 +248,7 @@ def create_visualization_data(rtm_instance,
     }
 
 
-def save_stacked_results(data: Dict[str, Any], 
+def save_stacked_results(data: Dict[str, Any],
                          filepath: str):
     """
     Save stacked RTM results.
@@ -262,7 +263,7 @@ def save_stacked_results(data: Dict[str, Any],
     directory = os.path.dirname(filepath)
     if directory and not os.path.exists(directory):
         os.makedirs(directory)
-        
+
     np.savez_compressed(
         filepath,
         u=data['u'],

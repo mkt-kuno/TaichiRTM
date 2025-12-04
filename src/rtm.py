@@ -29,19 +29,17 @@ Steps:
 5. Generate imaging result
 """
 
-import taichi as ti
-import numpy as np
-from typing import Optional, Callable
 import os
+from typing import Callable, Optional
 
-from .forward_modeling import ForwardModeling
+import numpy as np
+import taichi as ti
+
 from .backward_modeling import BackwardModeling
-
-# Module-level variable to store device memory setting from init_taichi
-_device_memory_GB = 8.0
+from .forward_modeling import ForwardModeling
 
 
-def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8.0, default_fp=None, **kwargs):
+def init_taichi(backend: str = 'cpu', default_fp=None, **kwargs):
     """
     Initialize Taichi with specified backend.
     
@@ -49,16 +47,11 @@ def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8.0, default_fp=
     ----------
     backend : str
         Backend to use: 'cpu', 'gpu', 'cuda', 'vulkan', 'opengl', 'metal'
-    device_memory_GB : float
-        Device memory allocation in GB (default: 8.0)
     default_fp : optional
         Default floating-point type. If ti.f64, fast_math is disabled.
     **kwargs
         Additional arguments passed to ti.init()
     """
-    global _device_memory_GB
-    _device_memory_GB = device_memory_GB
-    
     arch_map = {
         'cpu': ti.cpu,
         'gpu': ti.gpu,
@@ -67,25 +60,25 @@ def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8.0, default_fp=
         'opengl': ti.opengl,
         'metal': ti.metal,
     }
-    
+
     arch = arch_map.get(backend.lower(), ti.cpu)
-    
+
     # Set defaults for advanced_optimization and fast_math
     if 'advanced_optimization' not in kwargs:
         kwargs['advanced_optimization'] = True
-    
+
     # fast_math should be OFF when ti.f64 is specified
     if 'fast_math' not in kwargs:
         if default_fp is not None and default_fp is ti.f64:
             kwargs['fast_math'] = False
         else:
             kwargs['fast_math'] = True
-    
+
     # Build init arguments
-    init_kwargs = {'arch': arch, 'device_memory_GB': device_memory_GB, **kwargs}
+    init_kwargs = {'arch': arch, **kwargs}
     if default_fp is not None:
         init_kwargs['default_fp'] = default_fp
-    
+
     ti.init(**init_kwargs)
 
 
@@ -131,42 +124,46 @@ class ReverseTimeMigration:
         Snapshot interval (default: 216)
     receivers_height : np.ndarray, optional
         Height of receivers for topography
+    total_allocate_memory_gb : float
+        Total memory budget in GB for RTM computation (default: 8.0)
     """
 
     def __init__(self, **kwargs):
         self.observed_u = np.asarray(kwargs['observed_u'], dtype=np.float32)
         self.observed_v = np.asarray(kwargs['observed_v'], dtype=np.float32)
         self.observed_w = np.asarray(kwargs['observed_w'], dtype=np.float32)
-        
+
         self.source_u = np.asarray(kwargs['source_u'], dtype=np.float32)
         self.source_v = np.asarray(kwargs['source_v'], dtype=np.float32)
         self.source_w = np.asarray(kwargs['source_w'], dtype=np.float32)
-        
+
         self.receiver_loc = np.asarray(kwargs['receiver_loc'], dtype=np.float32)
         self.receiver_num = len(self.receiver_loc)
-        
+
         self.source_loc = float(kwargs['source_loc'])
         self.fs = float(kwargs['fs'])
-        
+
         self.rho = kwargs.get('rho', 1500)
         self.poisson = kwargs.get('poisson_ratio', 0.33)
-        
+
         self.isnap = kwargs.get('isnap', 216)
         self.nt = self.observed_u.shape[1]
-        
+
         self.absorbing_frame = kwargs.get('absorbing_frame', 50)
         self.vmin = kwargs.get('vmin', 10.0)
         self.vmax = kwargs.get('vmax', 500.0)
         self.vstep = kwargs.get('vstep', 10)
         self.v_fix = kwargs.get('v_fix', None)
-        
+
+        self.total_allocate_memory_gb = kwargs.get('total_allocate_memory_gb', 8.0)
+
         self.receivers_height = kwargs.get('receivers_height', None)
         if self.receivers_height is not None:
             self.receivers_height = np.asarray(self.receivers_height, dtype=np.float32)
             self.receivers_height = self.receivers_height - np.max(self.receivers_height)
-            
+
         self._check_parameters()
-        
+
     def _check_parameters(self):
         """Validate input parameters."""
         if self.observed_u.shape != self.observed_v.shape or self.observed_u.shape != self.observed_w.shape:
@@ -180,8 +177,8 @@ class ReverseTimeMigration:
         if self.receivers_height is not None:
             if len(self.receivers_height) != self.receiver_num:
                 raise ValueError('Receiver height array size must match receiver count')
-                
-    def estimate_velocity(self, array: np.ndarray, vmin: float, vmax: float, 
+
+    def estimate_velocity(self, array: np.ndarray, vmin: float, vmax: float,
                           vstep: int = 10) -> float:
         """
         Estimate velocity using cross-correlation method.
@@ -206,32 +203,32 @@ class ReverseTimeMigration:
         M, L = array.shape
         r = (vmax / vmin) ** (1 / (vstep - 1))
         v_array = vmin * r ** np.arange(vstep)
-        
+
         sum_max = 0
         v_estimated = vmin
-        
+
         for v in v_array:
             abs_d = np.abs(self.receiver_loc - self.source_loc)
             # Round before conversion to avoid truncation issues
             tsteps = np.round(self.fs * abs_d / v).astype(np.int32)
             tsteps = tsteps - np.min(tsteps)
             L_t = L - np.max(tsteps)
-            
+
             if L_t <= 0:
                 continue
-                
+
             indices = tsteps[:, None] + np.arange(L_t)
             shifted = array[np.arange(array.shape[0])[:, None], indices]
             products = np.prod(shifted, axis=0)
             sum_v = np.abs(np.sum(products))
-            
+
             if sum_v > sum_max:
                 sum_max = sum_v
                 v_estimated = v
-                
+
         print(f'Estimated velocity: {v_estimated:.2f} m/s')
         return float(v_estimated)
-        
+
     def _setup_modeling_conditions(self, estimated_v: float, CFL: float, absorbing_frame: int):
         """Setup conditions for forward/backward modeling."""
         dx = estimated_v / self.fs / CFL
@@ -239,72 +236,76 @@ class ReverseTimeMigration:
         nx = int((np.max(self.receiver_loc) - np.min(self.receiver_loc)) / dx)
         nx += 4 * absorbing_frame
         nz = nx
-        
+
         rho = self.rho * np.ones((nx, nz), dtype=np.float32)
         vs = estimated_v * np.ones((nx, nz), dtype=np.float32)
         vp = np.sqrt((2 * self.poisson + 1) / (1 - 2 * self.poisson)) * vs
-        
+
         return dx, dz, nx, nz, rho, vs, vp
-        
+
     def _setup_surface_and_locations(self, nx, nz, dx, dz, absorbing_frame):
         """Setup surface matrix and location mappings."""
         offset = 2 * absorbing_frame
-        
+
         receiver_loc_step = []
         for loc in self.receiver_loc:
             receiver_loc_step.append([int(loc / dx + offset), 1])
-            
+
         src_loc_step = [[int(self.source_loc / dx + offset), 1]]
-        
+
         surface_matrix = np.ones((nx, nz), dtype=np.float32)
         height_array = np.zeros(nx, dtype=np.float32)
-        
+
         if self.receivers_height is not None:
             receivers_height_step = -1 * self.receivers_height / dz
-            
+
             for i, locstep in enumerate(receiver_loc_step):
                 heightstep = int(receivers_height_step[i])
                 receiver_loc_step[i][1] = heightstep
-                
+
                 if i == 0:
                     surface_matrix[:locstep[0], :heightstep] = 0
                     height_array[:locstep[0]] = heightstep
-                    
+
                 if i > 0:
                     next_locstep = receiver_loc_step[i][0]
                     locstep_prev = receiver_loc_step[i - 1][0]
                     next_heightstep = receivers_height_step[i]
                     heightstep_prev = receivers_height_step[i - 1]
-                    
+
                     for ix in range(locstep_prev, next_locstep):
                         lean = (next_heightstep - heightstep_prev) / (next_locstep - locstep_prev)
                         width = ix - locstep_prev
                         height_ix = int(lean * width + heightstep_prev)
                         surface_matrix[ix, :height_ix] = 0
                         height_array[ix] = height_ix
-                        
+
             height_array[receiver_loc_step[-1][0]:] = receivers_height_step[-1]
             surface_matrix[receiver_loc_step[-1][0]:, :int(receivers_height_step[-1])] = 0
-            
+
             src_loc_ind = src_loc_step[0][0]
             source_height_step = int(height_array[src_loc_ind])
             src_loc_step[0][1] = source_height_step + 1
-            
+
             self.height_array = height_array
             self.surface_matrix = surface_matrix
         else:
             self.surface_matrix = None
-            
+
         return receiver_loc_step, src_loc_step, surface_matrix
-        
-    def _compute_isnap(self, nx: int, nz: int, nt: int) -> int:
+
+    def _compute_isnap(self, nx: int, nz: int, nt: int, num_sources: int, num_receivers: int) -> int:
         """
-        Compute snapshot interval based on available device memory.
+        Compute snapshot interval based on available memory budget.
         
         This function calculates the optimal snapshot interval to maximize
-        memory usage while staying within the device_memory_GB budget set
-        in init_taichi(). A smaller isnap means more snapshots and better 
-        imaging quality at the cost of more memory.
+        memory usage while staying within the total_allocate_memory_gb budget.
+        A smaller isnap means more snapshots and better imaging quality at the 
+        cost of more memory.
+        
+        Since ForwardModeling and BackwardModeling don't run simultaneously,
+        we use the larger of the two estimated memory requirements and subtract
+        from the total budget to determine available memory for snapshots.
         
         Parameters
         ----------
@@ -314,77 +315,75 @@ class ReverseTimeMigration:
             Grid size in z direction
         nt : int
             Number of time steps
+        num_sources : int
+            Number of sources
+        num_receivers : int
+            Number of receivers
             
         Returns
         -------
         int
             Snapshot interval (minimum 1)
         """
-        global _device_memory_GB
-        
         dtype_size = 4  # float32 bytes
         num_components = 3  # u, v, w velocity components
-        
-        # Total available memory from init_taichi (in bytes)
-        total_memory_bytes = int(_device_memory_GB * 1024 * 1024 * 1024)
-        
-        # Calculate memory per snapshot in bytes
+
+        # Total available memory budget (in bytes)
+        total_memory_bytes = int(self.total_allocate_memory_gb * 1024 * 1024 * 1024)
+
+        # Estimate memory for ForwardModeling and BackwardModeling
+        fw_memory = ForwardModeling.estimate_memory_bytes(nx, nz, nt, num_sources, num_receivers)
+        bw_memory = BackwardModeling.estimate_memory_bytes(nx, nz, nt, num_sources, num_receivers)
+
+        # Use the larger of the two since they don't run simultaneously
+        modeling_memory = max(fw_memory, bw_memory)
+
+        # Calculate memory per snapshot in bytes (for u, v, w velocity fields)
         bytes_per_snapshot = nx * nz * dtype_size * num_components
-        
-        # Reserve memory for stress fields, velocity fields, and other data structures
-        # Each field is nx*nz*float32, we have about 20 fields total (stress, velocity, material, etc.)
-        # ForwardModeling and BackwardModeling each have ~15-20 fields
-        num_fields = 40  # Conservative estimate for both forward and backward
-        field_memory = num_fields * nx * nz * dtype_size
-        
-        # Account for observed data and source wavelets
-        # observed: num_receivers * nt * 3 * 4 bytes
-        # source: num_sources * nt * 3 * 4 bytes  
-        # Use actual receiver/source counts
-        num_receivers = self.receiver_num
-        num_sources = 1  # Typically 1 source
-        data_memory = (num_receivers + num_sources) * nt * num_components * dtype_size
-        
+
         # Base memory overhead (Taichi runtime, Python, etc.) - roughly 500MB
         base_overhead = 500 * 1024 * 1024
-        
+
         # Memory margin (10% of total)
         memory_margin = int(total_memory_bytes * 0.1)
-        
-        # Available memory for snapshots
-        allowed_memory = total_memory_bytes - memory_margin - field_memory - data_memory - base_overhead
-        
-        if allowed_memory <= 0:
-            print(f"Warning: Very limited memory available ({_device_memory_GB:.1f} GB), using minimum snapshots")
+
+        # Available memory for snapshots = total - modeling - overhead - margin
+        available_for_snapshots = total_memory_bytes - modeling_memory - base_overhead - memory_margin
+
+        if available_for_snapshots <= 0:
+            print(f"Warning: Very limited memory available ({self.total_allocate_memory_gb:.1f} GB), using minimum snapshots")
             return nt  # Minimum snapshots
-            
-        max_snapshots = allowed_memory // bytes_per_snapshot
-        
+
+        max_snapshots = available_for_snapshots // bytes_per_snapshot
+
         if max_snapshots <= 0:
             return nt
         if max_snapshots >= nt:
             return 1  # Save every timestep
-            
+
         isnap = max(1, int(np.ceil(nt / max_snapshots)))
-        
+
         # Calculate actual memory usage for logging
         actual_snapshots = nt // isnap
-        actual_memory_mb = (actual_snapshots * bytes_per_snapshot) / (1024 * 1024)
-        total_memory_mb = _device_memory_GB * 1024
-        print(f"Snapshot settings: isnap={isnap}, num_snapshots={actual_snapshots}, "
-              f"snapshot_memory={actual_memory_mb:.0f} MiB / {total_memory_mb:.0f} MiB device memory")
-        
+        actual_snapshot_memory_mb = (actual_snapshots * bytes_per_snapshot) / (1024 * 1024)
+        total_memory_mb = self.total_allocate_memory_gb * 1024
+        modeling_memory_mb = modeling_memory / (1024 * 1024)
+        print(f"Memory estimate: modeling={modeling_memory_mb:.0f} MiB, "
+              f"snapshots={actual_snapshot_memory_mb:.0f} MiB ({actual_snapshots} snapshots), "
+              f"total budget={total_memory_mb:.0f} MiB")
+        print(f"Snapshot settings: isnap={isnap}")
+
         return isnap
-        
-    def run(self, 
+
+    def run(self,
             method: str = 'cross_correlation',
             display_callback: Optional[Callable] = None):
         """
         Run Reverse Time Migration.
-        
+
         Memory allocation for snapshots is automatically computed based on the
-        device_memory_GB setting from init_taichi().
-        
+        total_allocate_memory_gb setting.
+
         Parameters
         ----------
         method : str
@@ -397,48 +396,48 @@ class ReverseTimeMigration:
             estimated_v = self.v_fix
         else:
             estimated_v = self.estimate_velocity(self.observed_v, self.vmin, self.vmax, self.vstep)
-            
+
         CFL = 0.8
         absorbing_frame = self.absorbing_frame
-        
+
         flag = 99
         print('\nStarting forward modeling...')
-        
+
         while flag:
             CFL *= 0.5
             flag = 0
-            
+
             dx, dz, nx, nz, rho, vs, vp = self._setup_modeling_conditions(estimated_v, CFL, absorbing_frame)
             receiver_loc_step, src_loc_step, surface_matrix = self._setup_surface_and_locations(
                 nx, nz, dx, dz, absorbing_frame)
-            
-            isnap = self._compute_isnap(nx, nz, self.nt)
-            
+
             wavelet_u = self.source_u.reshape(1, -1) if self.source_u.ndim == 1 else self.source_u
             wavelet_v = self.source_v.reshape(1, -1) if self.source_v.ndim == 1 else self.source_v
             wavelet_w = self.source_w.reshape(1, -1) if self.source_w.ndim == 1 else self.source_w
-            
+
             # Prepare all data as Taichi fields for ForwardModeling
             num_sources = len(src_loc_step)
             num_receivers = len(receiver_loc_step)
-            
+
+            isnap = self._compute_isnap(nx, nz, self.nt, num_sources, num_receivers)
+
             # Create material property fields
             mu_np = rho * vs ** 2
             lam_np = ((vp / vs) ** 2 - 2) * mu_np
-            
+
             mu_field = ti.field(dtype=ti.f32, shape=(nx, nz))
             lam_field = ti.field(dtype=ti.f32, shape=(nx, nz))
             rho_field_input = ti.field(dtype=ti.f32, shape=(nx, nz))
             mu_field.from_numpy(mu_np)
             lam_field.from_numpy(lam_np)
             rho_field_input.from_numpy(rho)
-            
+
             # Create location fields
             src_loc_field = ti.field(dtype=ti.i32, shape=(num_sources, 2))
             recv_loc_field = ti.field(dtype=ti.i32, shape=(num_receivers, 2))
             src_loc_field.from_numpy(np.array(src_loc_step, dtype=np.int32))
             recv_loc_field.from_numpy(np.array(receiver_loc_step, dtype=np.int32))
-            
+
             # Create wavelet fields
             wavelet_u_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
             wavelet_v_field = ti.field(dtype=ti.f32, shape=(num_sources, self.nt))
@@ -446,13 +445,13 @@ class ReverseTimeMigration:
             wavelet_u_field.from_numpy(np.asarray(wavelet_u, dtype=np.float32))
             wavelet_v_field.from_numpy(np.asarray(wavelet_v, dtype=np.float32))
             wavelet_w_field.from_numpy(np.asarray(wavelet_w, dtype=np.float32))
-            
+
             # Create surface matrix field (optional)
             surface_matrix_field = None
             if surface_matrix is not None:
                 surface_matrix_field = ti.field(dtype=ti.f32, shape=(nx, nz))
                 surface_matrix_field.from_numpy(np.asarray(surface_matrix, dtype=np.float32))
-            
+
             fw = ForwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
                 mu_field=mu_field, lam_field=lam_field, rho_field=rho_field_input,
@@ -467,15 +466,15 @@ class ReverseTimeMigration:
                 num_sources=num_sources,
                 num_receivers=num_receivers
             )
-            
+
             flag = fw.run(save=True, display_callback=display_callback)
-            
+
             if flag:
                 print(f'Forward modeling failed with flag {flag}, reducing CFL...')
                 continue
-                
+
             print('Forward modeling completed successfully.')
-            
+
             # Create observed data fields for BackwardModeling
             obsdata_u_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
             obsdata_v_field = ti.field(dtype=ti.f32, shape=(num_receivers, self.nt))
@@ -483,7 +482,7 @@ class ReverseTimeMigration:
             obsdata_u_field.from_numpy(self.observed_u)
             obsdata_v_field.from_numpy(self.observed_v)
             obsdata_w_field.from_numpy(self.observed_w)
-            
+
             bw = BackwardModeling(
                 nx=nx, nz=nz, dx=dx, dz=dz, nt=self.nt, fs=self.fs,
                 mu_field=mu_field, lam_field=lam_field, rho_field=rho_field_input,
@@ -497,7 +496,7 @@ class ReverseTimeMigration:
                 num_sources=num_sources,
                 num_receivers=num_receivers
             )
-            
+
             flag = bw.run_calc(
                 import_fwdata_u=fw.u_save_field,
                 import_fwdata_v=fw.v_save_field,
@@ -508,18 +507,18 @@ class ReverseTimeMigration:
                 method=method,
                 display_callback=display_callback
             )
-            
+
             if flag:
                 print(f'Backward modeling failed with flag {flag}, reducing CFL...')
                 continue
-                
+
             print('Backward modeling completed successfully.')
-            
+
         print('\nSimulation completed.')
         print(f'Estimated velocity: {estimated_v} m/s')
         print(f'CFL: {CFL}')
         print(f'Grid: nx={nx}, nz={nz}, dx={dx:.4f}')
-        
+
         self.image_u, self.image_v, self.image_w = bw.get_results()
         self.dx = dx
         self.dz = dz
@@ -528,7 +527,7 @@ class ReverseTimeMigration:
         self.offset = 2 * absorbing_frame * dx
         self.CFL = CFL
         self.src_loc_step = src_loc_step
-        
+
     def save_result(self, directory: str, savename: str):
         """
         Save RTM results to npz file.
@@ -544,12 +543,12 @@ class ReverseTimeMigration:
         xmax = float(self.dx * self.nx - self.offset)
         zmin = 0.0
         zmax = float(self.dz * self.nz)
-        
+
         surface_matrix = getattr(self, 'surface_matrix', None)
-        
+
         if not os.path.exists(directory):
             os.makedirs(directory)
-            
+
         np.savez_compressed(
             os.path.join(directory, savename + '.npz'),
             u=self.image_u,
@@ -569,7 +568,7 @@ class ReverseTimeMigration:
             surface_matrix=surface_matrix
         )
         print(f'Results saved to {os.path.join(directory, savename)}.npz')
-        
+
     def get_results(self) -> tuple:
         """
         Get RTM imaging results.
@@ -580,7 +579,7 @@ class ReverseTimeMigration:
             (image_u, image_v, image_w) numpy arrays
         """
         return self.image_u, self.image_v, self.image_w
-        
+
     def get_axes_extent(self) -> dict:
         """
         Get axes extent for plotting.
