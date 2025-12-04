@@ -32,9 +32,9 @@ import taichi as ti
 class BackwardModeling:
     """
     Backward modeling for reverse time migration.
-    
+
     All input data must be provided as Taichi fields.
-    
+
     Parameters
     ----------
     nx : int
@@ -79,9 +79,9 @@ class BackwardModeling:
     def estimate_memory_bytes(nx: int, nz: int, nt: int, num_sources: int, num_receivers: int) -> int:
         """
         Estimate the memory usage of BackwardModeling in bytes.
-        
+
         This provides an accurate calculation for memory budgeting.
-        
+
         Parameters
         ----------
         nx : int
@@ -94,7 +94,7 @@ class BackwardModeling:
             Number of sources
         num_receivers : int
             Number of receivers
-            
+
         Returns
         -------
         int
@@ -333,7 +333,7 @@ class BackwardModeling:
     def _check_finite(self) -> ti.i32:
         """
         Check if all fields are finite - parallelized.
-        
+
         Uses u_val != u_val pattern for NaN detection (standard IEEE-754 trick)
         and magnitude check for overflow detection.
         """
@@ -408,7 +408,7 @@ class BackwardModeling:
                  stability_check_interval: int = 100) -> int:
         """
         Run backward modeling with correlation.
-        
+
         Parameters
         ----------
         import_fwdata_u : ti.field
@@ -430,7 +430,7 @@ class BackwardModeling:
         stability_check_interval : int
             How often to check for numerical stability (default: every 100 steps).
             Higher values improve GPU utilization but may miss instability earlier.
-            
+
         Returns
         -------
         int
@@ -486,3 +486,56 @@ class BackwardModeling:
             self.result_v.to_numpy(),
             self.result_w.to_numpy()
         )
+
+    def cleanup(self):
+        """
+        Release Taichi fields to free GPU/CPU memory.
+
+        Call this method when the BackwardModeling instance is no longer needed
+        to allow garbage collection of Taichi fields.
+        """
+        # Set field references to None to allow GC
+        # Stress fields
+        self.sxx = None
+        self.sxz = None
+        self.szz = None
+        self.syx = None
+        self.syz = None
+
+        # Velocity fields
+        self.u = None
+        self.v = None
+        self.w = None
+
+        # Averaged material fields
+        self.mxz = None
+        self.myx = None
+        self.myz = None
+
+        # Averaged density fields
+        self.rho_u = None
+        self.rho_w = None
+
+        # Absorbing boundary coefficients
+        self.absorb_coeff = None
+
+        # Synthetic source fields
+        self.synsrc_u = None
+        self.synsrc_v = None
+        self.synsrc_w = None
+
+        # Result fields
+        self.result_u = None
+        self.result_v = None
+        self.result_w = None
+
+        # Input field references (don't delete, just clear reference)
+        self.src_loc_field = None
+        self.recv_loc_field = None
+        self.obsdata_u_field = None
+        self.obsdata_v_field = None
+        self.obsdata_w_field = None
+        self.surface_matrix = None
+        self.mu = None
+        self.lam = None
+        self.rho_field = None

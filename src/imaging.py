@@ -29,14 +29,14 @@ import numpy as np
 def load_rtm_results(directory: str, pattern: str = '*.npz') -> List[Dict[str, Any]]:
     """
     Load RTM result files from a directory.
-    
+
     Parameters
     ----------
     directory : str
         Directory containing npz files
     pattern : str
         Glob pattern for files (default: '*.npz')
-        
+
     Returns
     -------
     list
@@ -58,14 +58,14 @@ def stack_rtm_images(results: List[Dict[str, Any]],
                      subtract_mean: bool = True) -> Dict[str, np.ndarray]:
     """
     Stack multiple RTM images.
-    
+
     Parameters
     ----------
     results : list
         List of RTM result dictionaries
     subtract_mean : bool
         Whether to subtract mean from stacked images
-        
+
     Returns
     -------
     dict
@@ -132,12 +132,12 @@ def stack_rtm_images(results: List[Dict[str, Any]],
 def compute_display_limits(data: np.ndarray) -> tuple:
     """
     Compute symmetric display limits for seismic data.
-    
+
     Parameters
     ----------
     data : np.ndarray
         Data array
-        
+
     Returns
     -------
     tuple
@@ -152,7 +152,7 @@ def prepare_image_data(image: np.ndarray,
                        attenuation_factor: float = 1e-3) -> np.ndarray:
     """
     Prepare image data for display.
-    
+
     Parameters
     ----------
     image : np.ndarray
@@ -161,7 +161,7 @@ def prepare_image_data(image: np.ndarray,
         Region to attenuate (x_start, x_end, z_start, z_end)
     attenuation_factor : float
         Attenuation multiplier
-        
+
     Returns
     -------
     np.ndarray
@@ -188,7 +188,7 @@ def create_visualization_data(rtm_instance,
                               source_attenuation_radius: int = 10) -> Dict[str, Any]:
     """
     Create visualization data from RTM instance.
-    
+
     Parameters
     ----------
     rtm_instance : ReverseTimeMigration
@@ -199,7 +199,7 @@ def create_visualization_data(rtm_instance,
         Whether to attenuate near source location
     source_attenuation_radius : int
         Radius for source attenuation
-        
+
     Returns
     -------
     dict
@@ -252,7 +252,7 @@ def save_stacked_results(data: Dict[str, Any],
                          filepath: str):
     """
     Save stacked RTM results.
-    
+
     Parameters
     ----------
     data : dict
