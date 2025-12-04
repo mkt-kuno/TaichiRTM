@@ -70,12 +70,17 @@ def init_taichi(backend: str = 'cpu', device_memory_GB: float = 8.0, default_fp=
     
     # fast_math should be OFF when ti.f64 is specified
     if 'fast_math' not in kwargs:
-        if default_fp == ti.f64:
+        if default_fp is not None and default_fp is ti.f64:
             kwargs['fast_math'] = False
         else:
             kwargs['fast_math'] = True
     
-    ti.init(arch=arch, device_memory_GB=device_memory_GB, default_fp=default_fp, **kwargs)
+    # Build init arguments
+    init_kwargs = {'arch': arch, 'device_memory_GB': device_memory_GB, **kwargs}
+    if default_fp is not None:
+        init_kwargs['default_fp'] = default_fp
+    
+    ti.init(**init_kwargs)
 
 
 class ReverseTimeMigration:
@@ -358,8 +363,8 @@ class ReverseTimeMigration:
         return isnap
         
     def run(self, 
-            total_memory: Optional[int] = 8000,
-            memory_margin: Optional[int] = 500,
+            total_memory: int = 8000,
+            memory_margin: int = 500,
             method: str = 'cross_correlation',
             display_callback: Optional[Callable] = None):
         """
@@ -367,9 +372,9 @@ class ReverseTimeMigration:
         
         Parameters
         ----------
-        total_memory : int, optional
+        total_memory : int
             Total available memory in MiB (default: 8000)
-        memory_margin : int, optional
+        memory_margin : int
             Memory margin in MiB (default: 500)
         method : str
             Imaging condition method
