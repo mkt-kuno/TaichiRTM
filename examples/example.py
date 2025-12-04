@@ -71,10 +71,9 @@ def main():
     def get_source_ch(distance, source_x):
         return [np.argmin(np.abs(np.array(distance) - source_x))]
 
-    # Initialize Taichi - try GPU first, fall back to CPU
+    # Backend selection - try GPU first, fall back to CPU
     backend = 'gpu'  # Options: 'cpu', 'gpu', 'cuda', 'vulkan'
-    print(f"Initializing Taichi with backend: {backend}")
-    init_taichi(backend=backend)
+    print(f"Using Taichi backend: {backend}")
 
     # Data directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -102,6 +101,10 @@ def main():
     # Process all files using context manager for automatic memory cleanup
     for npz_path in npzs_path_list:
         print(f"\nProcessing: {os.path.basename(npz_path)}")
+
+        # Initialize Taichi for each iteration
+        # (context manager calls ti.reset() on exit, requiring re-initialization)
+        init_taichi(backend=backend)
 
         npz = np.load(npz_path)
 
@@ -153,6 +156,7 @@ def main():
             save_result_images(rtm, os.path.join(output_dir, 'RTMimages'), savename)
 
         # Memory is automatically cleaned up when exiting the 'with' block
+        # (cleanup calls ti.reset() to release GPU/CPU memory)
 
     print("\nProcessing complete!")
 
