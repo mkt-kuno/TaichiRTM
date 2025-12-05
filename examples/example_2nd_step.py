@@ -93,7 +93,8 @@ def create_individual_figures(
     """
     extent = stacked_data['extent']
 
-    # Use w component's limit for consistent scaling across all components
+    # Use w component's maximum absolute value as the scale reference
+    # for consistent color scaling across all individual figures
     _, wmax = compute_display_limits(stacked_data['w'])
 
     for comp, axis_label in [('u', 'x'), ('v', 'y'), ('w', 'z')]:
@@ -113,13 +114,12 @@ def create_individual_figures(
 
 def main():
     """Main function to create RTM images from npz results."""
-    # Configuration
+    # Configuration (velocity should match example_1st_step.py)
     velocity = 120
     subtract_mean = True
     cmap = 'gray'
 
-    # Directories
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Directories (use module-level script_dir)
     data_dir = os.path.join(script_dir, 'results', 'data')
     output_dir = os.path.join(script_dir, 'results', 'RTMimages')
 
