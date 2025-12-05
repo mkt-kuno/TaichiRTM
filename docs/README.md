@@ -41,7 +41,7 @@ pip install ".[visualization]"
 
 ## Quick Example
 
-以下の3ステップでRTMを実行できます。サンプルデータのダウンロードから結果の可視化まで一連の流れを示します。
+You can execute RTM in the following 3 steps. This demonstrates the workflow from downloading sample data to visualizing results.
 
 ### Setup
 
@@ -57,7 +57,7 @@ uv pip install matplotlib
 uv run python examples/example_1st_step.py
 ```
 
-サンプルデータ（npzファイル60個）がGitHub Releasesからダウンロードされ、`examples/npz_data/`に展開されます。
+Sample data (60 npz files) will be downloaded from GitHub Releases and extracted to `examples/npz_data/`.
 
 ### Step 2: Run RTM Processing
 
@@ -65,7 +65,7 @@ uv run python examples/example_1st_step.py
 uv run python examples/example_2nd_step.py
 ```
 
-RTM処理を実行し、結果を`examples/results/data/`に保存します。また、個別の可視化画像を`examples/results/images/`に出力します。
+Executes RTM processing and saves results to `examples/results/data/`. Also outputs individual visualization images to `examples/results/images/`.
 
 ### Step 3: Stack and Visualize Results
 
@@ -73,9 +73,9 @@ RTM処理を実行し、結果を`examples/results/data/`に保存します。�
 uv run python examples/example_3rd_step.py
 ```
 
-全てのRTM結果をスタックし、最終的な可視化画像を生成します。
+Stacks all RTM results and generates the final visualization images.
 
-**出力例（rhoモデルと計算された断面図）:**
+**Output examples (rho model and calculated cross-section):**
 
 <img src="./img/Ex_rhomodel.png" width="300" alt="Example rho model" />
 <img src="./img/y_120.png" width="400" alt="Calculated cross-section" />
@@ -84,7 +84,7 @@ uv run python examples/example_3rd_step.py
 
 ### Fluent API (Recommended)
 
-コンテキストマネージャを使用して自動的にメモリをクリーンアップできます：
+You can use a context manager to automatically clean up memory:
 
 ```python
 import numpy as np
@@ -115,7 +115,7 @@ with ReverseTimeMigration() as rtm:
 
 ### Backend Selection
 
-Taichiの初期化時にバックエンドを選択できます：
+You can select a backend when initializing Taichi:
 
 ```python
 from src import init_taichi
@@ -132,11 +132,11 @@ init_taichi(backend='metal')    # Apple Metal (macOS)
 ```
 
 ### Input Data Format
-観測波形をnumpy配列形式で準備します（shape: `[num_receivers, num_samples]`）
+Prepare observed waveforms in numpy array format (shape: `[num_receivers, num_samples]`)
 
 ### Visualization
 
-可視化ユーティリティを使用して結果を表示できます：
+You can use visualization utilities to display results:
 
 ```python
 from src import create_visualization_data
@@ -150,7 +150,7 @@ plt.imshow(vis_data['u'], extent=vis_data['extent'], cmap='gray')
 plt.show()
 ```
 
-結果のスタッキングと可視化：
+Stacking and visualizing results:
 
 ```python
 from src import load_rtm_results, stack_rtm_images, compute_display_limits
