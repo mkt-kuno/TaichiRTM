@@ -26,6 +26,7 @@ keywords = ["seismic", "reverse-time-migration", "RTM", "geophysics", "taichi", 
 dependencies = [
     "numpy>=1.20.0",
     "taichi>=1.6.0",
+    "tqdm>=4.60.0",
 ]
 
 [project.optional-dependencies]

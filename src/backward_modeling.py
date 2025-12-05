@@ -26,6 +26,7 @@ are handled in rtm.py before passing data to this module.
 from typing import Callable, Optional
 
 import taichi as ti
+from tqdm import tqdm
 
 
 @ti.data_oriented
@@ -535,7 +536,7 @@ class BackwardModeling:
             0: Success
             4-6: Field became infinite
         """
-        for it in range(self.nt):
+        for it in tqdm(range(self.nt), desc="Backward modeling", unit="step"):
             # Apply boundary conditions
             if self.surface_matrix is not None:
                 self._set_surface_boundary()
