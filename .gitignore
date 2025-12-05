@@ -51,4 +51,5 @@ Thumbs.db
 .ipynb_checkpoints/
 
 # Example outputs (regenerated on run)
-examples/
+examples/npz_data/
+examples/results/
