@@ -28,27 +28,63 @@ This program implements RTM using seismic wave forward/backward propagation mode
 # Install uv if not already installed
 pip install uv
 
-# Create virtual environment and install
-uv venv
-source .venv/bin/activate  # Linux/Mac
-# or .venv\Scripts\activate  # Windows
-
-uv pip install -r requirements.txt
+# Create virtual environment and install dependencies
+uv sync
 ```
 
 ### Using pip
-```bash
-pip install numpy taichi matplotlib
-```
-
-### From pyproject.toml
 ```bash
 pip install .
 # or with visualization support
 pip install ".[visualization]"
 ```
 
-## Quick Start
+## Quick Example
+
+以下の3ステップでRTMを実行できます。サンプルデータのダウンロードから結果の可視化まで一連の流れを示します。
+
+### Setup
+
+```bash
+# Install dependencies
+uv sync
+uv pip install matplotlib
+```
+
+### Step 1: Download Sample Data
+
+```bash
+uv run python examples/example_1st_step.py
+```
+
+サンプルデータ（npzファイル60個）がGitHub Releasesからダウンロードされ、`examples/npz_data/`に展開されます。
+
+### Step 2: Run RTM Processing
+
+```bash
+uv run python examples/example_2nd_step.py
+```
+
+RTM処理を実行し、結果を`examples/results/data/`に保存します。また、個別の可視化画像を`examples/results/images/`に出力します。
+
+### Step 3: Stack and Visualize Results
+
+```bash
+uv run python examples/example_3rd_step.py
+```
+
+全てのRTM結果をスタックし、最終的な可視化画像を生成します。
+
+**出力例（rhoモデルと計算された断面図）:**
+
+<img src="./img/Ex_rhomodel.png" width="300" alt="Example rho model" />
+<img src="./img/y_120.png" width="400" alt="Calculated cross-section" />
+
+## Usage Guide
+
+### Fluent API (Recommended)
+
+コンテキストマネージャを使用して自動的にメモリをクリーンアップできます：
 
 ```python
 import numpy as np
@@ -61,46 +97,25 @@ init_taichi(backend='cpu')
 # Load your seismic data
 npz = np.load('your_data.npz')
 
-# Create RTM instance
-rtm = ReverseTimeMigration(
-    observed_u=npz['x'],      # Observed velocity data (x-axis)
-    observed_v=npz['y'],      # Observed velocity data (y-axis)
-    observed_w=npz['z'],      # Observed velocity data (z-axis)
-    source_u=source_wavelet_x,
-    source_v=source_wavelet_y,
-    source_w=source_wavelet_z,
-    receiver_loc=distances,    # Receiver positions
-    source_loc=source_x,       # Source position
-    fs=100000,                 # Sampling frequency (Hz)
-    v_fix=120,                 # Fixed velocity (m/s)
-)
-
-# Run RTM
-rtm.run()
-
-# Save results
-rtm.save_result(directory='results/', savename='output')
-```
-
-## Examples
-
-Sample waveform files in np.array format are provided. See `examples/example.py` for the analysis procedure.
-
-**Example rho model and calculated cross-section:**
-
-<img src="./img/Ex_rhomodel.png" width="300" alt="Example rho model" /> 
-<img src="./img/y_120.png" width="400" alt="Calculated cross-section" />
-
-### Running the Example
-
-```bash
-cd examples
-python example.py
+# Use context manager for automatic memory cleanup
+with ReverseTimeMigration() as rtm:
+    rtm.set_observed_data(observed_u, observed_v, observed_w)
+    rtm.set_source(source_u, source_v, source_w, source_x)
+    rtm.set_receivers(distance)
+    rtm.set_frequency(fs)
+    rtm.set_velocity_range(80, 300, 100)
+    rtm.fix_velocity(velocity)
+    rtm.set_boundary(50)
+    rtm.set_memory(4.0)
+    rtm.run()
+    
+    # Save results
+    rtm.save_result(directory='results/data', savename='output')
 ```
 
 ### Backend Selection
 
-You can select the computation backend when initializing Taichi:
+Taichiの初期化時にバックエンドを選択できます：
 
 ```python
 from src import init_taichi
@@ -116,38 +131,43 @@ init_taichi(backend='opengl')   # OpenGL
 init_taichi(backend='metal')    # Apple Metal (macOS)
 ```
 
-## Usage Guide
+### Input Data Format
+観測波形をnumpy配列形式で準備します（shape: `[num_receivers, num_samples]`）
 
-### 1. Input Data
-Prepare record waveforms in numpy array format (shape: `[num_receivers, num_samples]`)
+### Visualization
 
-### 2. Parameter Settings
-Set parameters such as:
-- Analysis area size
-- Sampling rate
-- Wave velocity
-- Source/receiver locations
-
-See `examples/example.py` for details.
-
-### 3. RTM Execution
-Call the RTM core functions. The wave is propagated forward and backward, and imaging results are generated according to the imaging conditions (e.g., cross-correlation).
-
-### 4. Visualization
-The library provides imaging utilities without matplotlib dependency in core modules. For visualization, you can:
-- Use the provided callback functions with matplotlib
-- Implement your own visualization using any library
-- Load the saved npz results and visualize separately
+可視化ユーティリティを使用して結果を表示できます：
 
 ```python
 from src import create_visualization_data
 
 # Get visualization-ready data
-vis_data = create_visualization_data(rtm_instance)
+vis_data = create_visualization_data(rtm_instance, subtract_mean=True)
 
-# Use with matplotlib or any other library
+# Use with matplotlib
 import matplotlib.pyplot as plt
 plt.imshow(vis_data['u'], extent=vis_data['extent'], cmap='gray')
+plt.show()
+```
+
+結果のスタッキングと可視化：
+
+```python
+from src import load_rtm_results, stack_rtm_images, compute_display_limits
+
+# Load RTM results from directory
+results = load_rtm_results('results/data')
+
+# Stack multiple RTM images
+stacked_data = stack_rtm_images(results, subtract_mean=True)
+
+# Visualize
+import matplotlib.pyplot as plt
+vmin, vmax = compute_display_limits(stacked_data['w'])
+plt.imshow(stacked_data['w'], cmap='gray', extent=stacked_data['extent'],
+           vmin=vmin, vmax=vmax, aspect='auto')
+plt.xlabel('x [m]')
+plt.ylabel('z [m]')
 plt.show()
 ```
 
@@ -155,16 +175,36 @@ plt.show()
 
 ### Main Classes
 
-- `ReverseTimeMigration`: Main RTM class
+- `ReverseTimeMigration`: Main RTM class with Fluent API
+  - `set_observed_data(u, v, w)`: Set observed velocity data
+  - `set_source(u, v, w, loc)`: Set source wavelet and location
+  - `set_receivers(loc)`: Set receiver locations
+  - `set_frequency(fs)`: Set sampling frequency
+  - `set_velocity_range(vmin, vmax, vstep)`: Set velocity estimation range
+  - `fix_velocity(v)`: Set fixed velocity (skip estimation)
+  - `set_boundary(frame)`: Set absorbing boundary width
+  - `set_memory(gb)`: Set total memory budget in GB
+  - `set_density(rho)`: Set density
+  - `set_poisson_ratio(ratio)`: Set Poisson's ratio
+  - `set_topography(heights)`: Set receiver heights for topography
+  - `run()`: Execute RTM
+  - `save_result(directory, savename)`: Save results to npz file
+  - `get_results()`: Get imaging results as tuple
+  - `get_axes_extent()`: Get axes extent for plotting
+
 - `ForwardModeling`: Forward wave propagation
 - `BackwardModeling`: Backward wave propagation
 
 ### Utility Functions
 
 - `init_taichi(backend)`: Initialize Taichi with specified backend
+- `reset_taichi()`: Reset Taichi runtime (releases all memory)
 - `load_rtm_results(directory)`: Load RTM results from directory
-- `stack_rtm_images(results)`: Stack multiple RTM images
-- `create_visualization_data(rtm)`: Prepare data for visualization
+- `stack_rtm_images(results, subtract_mean)`: Stack multiple RTM images
+- `compute_display_limits(data)`: Compute symmetric display limits
+- `create_visualization_data(rtm, subtract_mean)`: Prepare data for visualization
+- `prepare_image_data(image, attenuate_region)`: Prepare image data for display
+- `save_stacked_results(data, filepath)`: Save stacked RTM results
 
 ## Coordinate System
 
