@@ -20,6 +20,9 @@ wheels/
 .installed.cfg
 *.egg
 
+# uv
+uv.lock
+
 # Virtual environments
 .venv/
 venv/
@@ -48,4 +51,4 @@ Thumbs.db
 .ipynb_checkpoints/
 
 # Example outputs (regenerated on run)
-examples/results/
+examples/
