@@ -46,7 +46,7 @@ def load_rtm_results(directory: str, pattern: str = '*.npz') -> List[Dict[str, A
     results = []
 
     for filepath in rtm_files:
-        data = np.load(filepath)
+        data = np.load(filepath, allow_pickle=True)
         result = {key: data[key] for key in data.files}
         result['filepath'] = filepath
         results.append(result)

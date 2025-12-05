@@ -19,7 +19,7 @@
 Example script for TaichiRTM - Step 2: Imaging
 
 This script reads RTM result npz files from 'results/data' directory,
-stacks them together, and outputs visualization images to 'results/RTMimages'.
+stacks them together, and outputs visualization images to 'results/images'.
 
 Usage:
     python example_2nd_step.py
@@ -121,7 +121,7 @@ def main():
 
     # Directories (use module-level script_dir)
     data_dir = os.path.join(script_dir, 'results', 'data')
-    output_dir = os.path.join(script_dir, 'results', 'RTMimages')
+    output_dir = os.path.join(script_dir, 'results', 'images')
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)

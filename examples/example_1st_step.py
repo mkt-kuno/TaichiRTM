@@ -153,7 +153,7 @@ def main():
             rtm.save_result(directory=os.path.join(output_dir, 'data'), savename=savename)
 
             # Save visualization
-            save_result_images(rtm, os.path.join(output_dir, 'RTMimages'), savename)
+            save_result_images(rtm, os.path.join(output_dir, 'images'), savename)
 
         # Memory is automatically cleaned up when exiting the 'with' block
         # (cleanup calls ti.reset() to release GPU/CPU memory)
