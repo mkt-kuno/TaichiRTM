@@ -661,7 +661,7 @@ class ReverseTimeMigration:
 
         rho = self.rho * np.ones((nx, nz), dtype=np.float32)
         vs = estimated_v * np.ones((nx, nz), dtype=np.float32)
-        vp = np.sqrt((2 * self.poisson + 1) / (1 - 2 * self.poisson)) * vs
+        vp = (np.sqrt((2 * self.poisson + 1) / (1 - 2 * self.poisson)) * vs).astype(np.float32)
 
         return dx, dz, nx, nz, rho, vs, vp
 
@@ -898,8 +898,8 @@ class ReverseTimeMigration:
             isnap = self._compute_isnap(nx, nz, self.nt, num_sources, num_receivers)
 
             # Create material property fields
-            mu_np = rho * vs ** 2
-            lam_np = ((vp / vs) ** 2 - 2) * mu_np
+            mu_np = (rho * vs ** 2).astype(np.float32)
+            lam_np = (((vp / vs) ** 2 - 2) * mu_np).astype(np.float32)
 
             mu_field = ti.field(dtype=ti.f32, shape=(nx, nz))
             lam_field = ti.field(dtype=ti.f32, shape=(nx, nz))
