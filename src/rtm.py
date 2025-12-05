@@ -229,6 +229,7 @@ class ReverseTimeMigration:
         self.v_fix = None
         self.total_allocate_memory_gb = 8.0
         self.receivers_height = None
+        self.debug = False
 
         # Internal tracking
         self._fw_instance = None
@@ -539,6 +540,26 @@ class ReverseTimeMigration:
         self.receivers_height = self.receivers_height - np.max(self.receivers_height)
         return self
 
+    def set_debug(self, debug: bool = True):
+        """
+        Enable or disable debug mode.
+
+        When debug mode is enabled, detailed information such as memory estimates
+        will be printed during computation.
+
+        Parameters
+        ----------
+        debug : bool
+            Whether to enable debug mode (default: True)
+
+        Returns
+        -------
+        ReverseTimeMigration
+            Self for method chaining
+        """
+        self.debug = debug
+        return self
+
     def _check_parameters(self):
         """Validate input parameters."""
         # Check required parameters are set with helpful error messages
@@ -790,7 +811,8 @@ class ReverseTimeMigration:
 
         if available_for_snapshots <= 0:
             print(f"Warning: Very limited memory available ({self.total_allocate_memory_gb:.1f} GB), using minimum snapshots")
-            print(f"  Fixed memory requirement: {fixed_memory / (1024**3):.2f} GB")
+            if self.debug:
+                print(f"  Fixed memory requirement: {fixed_memory / (1024**3):.2f} GB")
             return nt  # Minimum snapshots
 
         max_snapshots = available_for_snapshots // (bytes_per_snapshot + isnaps_overhead_per_snap)
@@ -802,21 +824,22 @@ class ReverseTimeMigration:
 
         isnap = max(1, int(np.ceil(nt / max_snapshots)))
 
-        # Calculate actual memory usage for logging
-        actual_snapshots = nt // isnap
-        actual_snapshot_memory = actual_snapshots * (bytes_per_snapshot + isnaps_overhead_per_snap)
+        # Calculate actual memory usage for logging (only when debug mode is enabled)
+        if self.debug:
+            actual_snapshots = nt // isnap
+            actual_snapshot_memory = actual_snapshots * (bytes_per_snapshot + isnaps_overhead_per_snap)
 
-        # Total memory = Base + Input + Phase1(FW) + Phase2(observed+BW) + Snapshots
-        total_estimated_memory = fixed_memory + actual_snapshot_memory
+            # Total memory = Base + Input + Phase1(FW) + Phase2(observed+BW) + Snapshots
+            total_estimated_memory = fixed_memory + actual_snapshot_memory
 
-        print("Memory estimate (all components in memory simultaneously):")
-        print(f"  Base overhead: {base_overhead / (1024**2):.1f} MiB")
-        print(f"  Input fields: {total_input_memory / (1024**2):.1f} MiB")
-        print(f"  Phase 1 (ForwardModeling): {fw_memory / (1024**2):.1f} MiB")
-        print(f"  Phase 2 (Observed + BackwardModeling): {(observed_data_memory + bw_memory) / (1024**2):.1f} MiB")
-        print(f"  Snapshots ({actual_snapshots}): {actual_snapshot_memory / (1024**2):.1f} MiB")
-        print(f"  Total: {total_estimated_memory / (1024**2):.1f} MiB / {total_memory_bytes / (1024**2):.1f} MiB budget")
-        print(f"  Snapshot interval: isnap={isnap}")
+            print("Memory estimate (all components in memory simultaneously):")
+            print(f"  Base overhead: {base_overhead / (1024**2):.1f} MiB")
+            print(f"  Input fields: {total_input_memory / (1024**2):.1f} MiB")
+            print(f"  Phase 1 (ForwardModeling): {fw_memory / (1024**2):.1f} MiB")
+            print(f"  Phase 2 (Observed + BackwardModeling): {(observed_data_memory + bw_memory) / (1024**2):.1f} MiB")
+            print(f"  Snapshots ({actual_snapshots}): {actual_snapshot_memory / (1024**2):.1f} MiB")
+            print(f"  Total: {total_estimated_memory / (1024**2):.1f} MiB / {total_memory_bytes / (1024**2):.1f} MiB budget")
+            print(f"  Snapshot interval: isnap={isnap}")
 
         return isnap
 
