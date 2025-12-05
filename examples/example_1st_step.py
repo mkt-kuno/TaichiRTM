@@ -33,7 +33,7 @@ import urllib.request
 import zipfile
 
 # Configuration
-DATA_URL = "https://github.com/mkt-kuno/TaichiRTM/releases/download/v1.0.0/npz_data.zip"
+DATA_URL = "https://github.com/mkt-kuno/TaichiRTM/releases/download/example/npz_data.zip"
 EXPECTED_FILES = 60  # 0.npz to 59.npz
 
 
