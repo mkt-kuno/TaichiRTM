@@ -4,6 +4,7 @@
 
 numpy>=1.20.0
 taichi>=1.6.0
+tqdm>=4.60.0
 
 # Optional: for visualization
 matplotlib>=3.5.0
