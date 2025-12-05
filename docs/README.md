@@ -88,8 +88,8 @@ Sample waveform files in np.array format are provided. See `examples/example.py`
 
 **Example rho model and calculated cross-section:**
 
-<img src="https://github.com/HaraandYutaro/Reverse-Time-Migration/blob/main/examples/ex_model/Ex_rhomodel.png" width="300" alt="Example rho model" /> 
-<img src="https://github.com/HaraandYutaro/Reverse-Time-Migration/blob/main/examples/results/RTMimages/y_120.png" width="400" alt="Calculated cross-section" />
+<img src="./img/Ex_rhomodel.png" width="300" alt="Example rho model" /> 
+<img src="./img/y_120.png" width="400" alt="Calculated cross-section" />
 
 ### Running the Example
 
