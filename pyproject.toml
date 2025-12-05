@@ -2,7 +2,7 @@
 name = "taichi-rtm"
 version = "2.0.0"
 description = "GPU-accelerated Reverse Time Migration for seismic exploration using Taichi"
-readme = "README.md"
+readme = "docs/README.md"
 license = {text = "LGPL-2.1-or-later"}
 authors = [
     {name = "Yutaro Hara"}
